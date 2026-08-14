@@ -18,6 +18,9 @@ THREADS=16
 CHUNK_SIZE=1000       # Granularità SpMV (-c)
 NORM_CHUNK=0          # Granularità operazioni vettoriali (-nc, 0 = automatico)
 
+# Tolleranza numerica (come da report del progetto: 10^-12)
+TOLERANCE="1e-12"
+
 # Controllo del dump dei vettori
 ENABLE_DUMP=true      # Imposta a true per abilitare il dump e confronto vettoriale
 SEQ_DUMP_FILE="seq_vec.dump"
@@ -47,6 +50,7 @@ echo "  Seed:                   $SEED"
 echo "  Thread C++:             $THREADS"
 echo "  SpMV Chunk Size (-c):   $CHUNK_SIZE"
 echo "  Norm Chunk Size (-nc):  $NORM_CHUNK (0 = statico / automatico)"
+echo "  Tolleranza numerica:    $TOLERANCE"
 echo "  Verifica Dump Vettore:  $ENABLE_DUMP"
 echo "=========================================================="
 
@@ -81,29 +85,40 @@ echo "  -> Rayleigh:  ${THR_RAY}"
 echo "=========================================================="
 
 # ==========================================
-# 5. Verifica di Correttezza
+# 5. Verifica di Correttezza con Tolleranza
 # ==========================================
-echo "RISULTATI CORRETTEZZA:"
+echo "RISULTATI CORRETTEZZA (Tolleranza: $TOLERANCE):"
 
-# Controllo 1: Checksum
+# Nota sul Checksum (informativa, poiché differisce a causa della non-associatività dei float)
 if [ "$SEQ_CHK" == "$THR_CHK" ]; then
-    echo "  [OK] Checksum: IDENTICI ($SEQ_CHK)"
+    echo "  [INFO] Checksum: Bitwise identici ($SEQ_CHK)"
 else
-    echo "  [MISMATCH] Checksum differenti! (Seq: $SEQ_CHK, Thr: $THR_CHK)"
+    echo "  [INFO] Checksum: Differenti (normale per via dell'ordine dei float in parallelo)"
 fi
 
-# Controllo 2: Valore di Rayleigh
-DIFF_RAY=$(awk -v s="$SEQ_RAY" -v t="$THR_RAY" 'BEGIN { diff = s - t; if (diff < 0) diff = -diff; printf "%.1e", diff }')
-echo "  [INFO] Diff Rayleigh: $DIFF_RAY"
+# Controllo 1: Differenza sul valore di Rayleigh rispetto alla tolleranza
+RAY_CHECK=$(awk -v s="$SEQ_RAY" -v t="$THR_RAY" -v tol="$TOLERANCE" 'BEGIN {
+    diff = s - t;
+    if (diff < 0) diff = -diff;
+    if (diff <= tol) print "PASS"; else print "FAIL";
+}')
 
-# Controllo 3: Confronto file Dump Vettori (se abilitato)
+DIFF_RAY_VAL=$(awk -v s="$SEQ_RAY" -v t="$THR_RAY" 'BEGIN { diff = s - t; if (diff < 0) diff = -diff; printf "%.2e", diff }')
+
+if [ "$RAY_CHECK" == "PASS" ]; then
+    echo "  [OK] Rayleigh value: VALIDATO (Diff: $DIFF_RAY_VAL <= $TOLERANCE)"
+else
+    echo "  [ERRORE] Rayleigh value: FUORI TOLLERANZA! (Diff: $DIFF_RAY_VAL > $TOLERANCE)"
+fi
+
+# Controllo 2: Confronto file Dump Vettori (se abilitato)
 if [ "$ENABLE_DUMP" = true ]; then
     if [ -f "$SEQ_DUMP_FILE" ] && [ -f "$THR_DUMP_FILE" ]; then
         if cmp -s "$SEQ_DUMP_FILE" "$THR_DUMP_FILE"; then
-            echo "  [OK] Dump Vector: File BITWISE IDENTICI!"
+            echo "  [OK] Dump Vector: File bitwise identici!"
         else
-            # Calcola l'errore massimo componente per componente (L_inf norm)
-            MAX_ERR=$(paste "$SEQ_DUMP_FILE" "$THR_DUMP_FILE" | awk '
+            # Calcola l'errore massimo componente per componente (L_inf norm) e confrontalo con la tolleranza
+            MAX_ERR=$(paste "$SEQ_DUMP_FILE" "$THR_DUMP_FILE" | awk -v tol="$TOLERANCE" '
                 BEGIN { max_diff = 0.0 }
                 {
                     diff = $1 - $2;
@@ -112,8 +127,14 @@ if [ "$ENABLE_DUMP" = true ]; then
                 }
                 END { printf "%.17e", max_diff }
             ')
-            echo "  [WARN] Dump Vector non bitwise identici."
-            echo "         Max Absolute Difference (L_inf): $MAX_ERR"
+            
+            VEC_CHECK=$(awk -v err="$MAX_ERR" -v tol="$TOLERANCE" 'BEGIN { if (err <= tol) print "PASS"; else print "FAIL"; }')
+
+            if [ "$VEC_CHECK" == "PASS" ]; then
+                echo "  [OK] Dump Vector (L_inf norm): VALIDATO (Max diff: $MAX_ERR <= $TOLERANCE)"
+            else
+                echo "  [ERRORE] Dump Vector (L_inf norm): FUORI TOLLERANZA! (Max diff: $MAX_ERR > $TOLERANCE)"
+            fi
         fi
     else
         echo "  [ERRORE] File di dump non trovati!"
