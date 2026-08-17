@@ -465,6 +465,12 @@ struct ExecutionTimers {
     double total_sec             = 0.0; // l'intera iterative_spmv_evolving_mpi_omp, init+loop+fase finale
 };
 
+struct IterativeResult {
+    double rayleigh;
+    std::uint64_t checksum;
+    std::size_t final_row_shift;
+};
+
 struct MpiIterativeResult {
     IterativeResult result;   // rayleigh, checksum, final_row_shift -- validi SOLO su rank 0
     ExecutionTimers timers;   // validi su OGNI rank (per l'analisi di imbalance nel report)
