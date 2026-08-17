@@ -23,7 +23,7 @@ SEED=111
 # Parametri del modello parallelo (condivisi da tutte le versioni parallele)
 THREADS=16
 CHUNK_SIZE=1000       # Granularità SpMV (-c)
-NORM_CHUNK=0          # Granularità operazioni vettoriali (-nc, 0 = automatico)
+NORM_CHUNK=1000          # Granularità operazioni vettoriali (-nc, 0 = automatico)
 
 # Tolleranza numerica (come da report del progetto: 10^-12)
 TOLERANCE="1e-12"
