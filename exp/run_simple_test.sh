@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# SPM "One-Shot" Project - Script di verifica correttezza e tempi
+# SPM "One-Shot" Project - Script di verifica correttezza e tempi (Ottimizzato)
 # ==============================================================================
 
 # ==========================================
@@ -10,46 +10,51 @@ set -euo pipefail
 # ==========================================
 SEQ_BIN="../iterative_SpMV"
 
-# Parametri del problema
-N=500000
-NZ=20000000
+# Parametri del problema (Problema "Largo" del report)
+N=1000000
+NZ=200000000
 MODE="irregular"
 SEED=111
 
-# Parametri del modello parallelo a singolo nodo (C++ threads e OpenMP tasks)
-THREADS=16
-CHUNK_SIZE=1000          # Granularità SpMV (-c)
-NORM_CHUNK=1000          # Granularità operazioni vettoriali (-nc, 0 = automatico)
+# --- Parametri Ottimali per C++ Threads ---
+CPP_THREADS=32
+CPP_CHUNK=2048
+CPP_NORM_CHUNK=2048
 
-# --- Parametri specifici per l'architettura distribuita MPI+OpenMP ---
-MPI_NODES=2              # Numero di macchine fisiche (nodi) da utilizzare
-MPI_RANKS=4              # Numero TOTALE di processi MPI nel cluster
-OMP_THREADS_PER_RANK=4   # Thread OpenMP per ogni singolo processo MPI
+# --- Parametri Ottimali per OpenMP Tasks ---
+OMP_THREADS=32
+OMP_CHUNK=4096
+OMP_NORM_CHUNK=4096
+
+# --- Parametri Ottimali per MPI + OpenMP ---
+MPI_NODES=8              # Numero di macchine fisiche
+MPI_RANKS=8              # 1 processo MPI per nodo
+OMP_THREADS_PER_RANK=16  # Thread per rank
+MPI_CHUNK=1024
+MPI_NORM_CHUNK=1024
 
 # Calcolo automatico della mappatura per OpenMPI
 RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
 MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
-# (Opzionale per test locali sovraffollati: aggiungere "--oversubscribe")
-# ---------------------------------------------------------------------
 
 # Tolleranza numerica
 TOLERANCE="1e-12"
 
-# Controllo del dump dei vettori
-ENABLE_DUMP=true
+# Controllo del dump dei vettori (DISATTIVATO per problemi grandi come da report)
+ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
 
 # ==========================================
 # 2. Implementazioni da testare
 # ==========================================
-# Formato: "LABEL|BINARIO|FILE_DUMP"
+# Formato: "LABEL|BINARIO|FILE_DUMP|THREADS|CHUNK_SIZE|NORM_CHUNK"
 IMPLS=(
-    "CPP_THREADS|../threadpool_SpMV|thr_vec.dump"
-    "OMP_TASKS|../omp_tasks_SpMV|omp_vec.dump"
+    "CPP_THREADS|../threadpool_SpMV|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
+    "OMP_TASKS|../omp_tasks_SpMV|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
 )
 
 MPI_IMPLS=(
-    "MPI_OMP|../mpi_omp_SpMV|mpi_vec.dump"
+    "MPI_OMP|../mpi_omp_SpMV|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
 )
 
 # ==========================================
@@ -78,7 +83,6 @@ run_and_extract_mpi() {
     local label="$1" binary="$2"; shift 2
     local out
 
-    # mpirun lancia i processi distribuiti, OMP_NUM_THREADS controlla i thread locali
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
 
@@ -104,7 +108,7 @@ compare_to_seq() {
     if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
         echo "  [INFO] Checksum: Bitwise identici (${!seq_chk_var})"
     else
-        echo "  [INFO] Checksum: Differenti (normale per via dell'ordine dei float in parallelo)"
+        echo "  [INFO] Checksum: Differenti (normale in parallelo)"
     fi
 
     local diff_val check_result
@@ -118,31 +122,6 @@ compare_to_seq() {
     else
         echo "  [ERRORE] Rayleigh value: FUORI TOLLERANZA! (Diff: $diff_val > $TOLERANCE)"
     fi
-
-    if [ "$ENABLE_DUMP" = true ]; then
-        if [ -f "$SEQ_DUMP_FILE" ] && [ -f "$dump_file" ]; then
-            if cmp -s "$SEQ_DUMP_FILE" "$dump_file"; then
-                echo "  [OK] Dump Vector: File bitwise identici!"
-            else
-                local max_err vec_check
-                max_err=$(paste "$SEQ_DUMP_FILE" "$dump_file" | awk -v tol="$TOLERANCE" '
-                    BEGIN { max_diff = 0.0 }
-                    { d = $1 - $2; if (d < 0) d = -d; if (d > max_diff) max_diff = d }
-                    END { printf "%.17e", max_diff }
-                ')
-                vec_check=$(awk -v e="$max_err" -v tol="$TOLERANCE" \
-                    'BEGIN { print (e <= tol) ? "PASS" : "FAIL" }')
-
-                if [ "$vec_check" == "PASS" ]; then
-                    echo "  [OK] Dump Vector (L_inf norm): VALIDATO (Max diff: $max_err <= $TOLERANCE)"
-                else
-                    echo "  [ERRORE] Dump Vector (L_inf norm): FUORI TOLLERANZA! (Max diff: $max_err > $TOLERANCE)"
-                fi
-            fi
-        else
-            echo "  [ERRORE] File di dump non trovati!"
-        fi
-    fi
     echo ""
 }
 
@@ -150,42 +129,29 @@ compare_to_seq() {
 # 4. Riepilogo configurazione
 # ==========================================
 echo "=========================================================="
-echo " CONFIGURAZIONE TEST"
+echo " CONFIGURAZIONE TEST (PARAMETRI OTTIMALI REPORT)"
 echo "=========================================================="
 echo "  Matrice (N x N):        $N"
 echo "  Elementi non-nulli (NZ): $NZ"
 echo "  Modalità matrice:       $MODE"
-echo "  Seed:                   $SEED"
-echo "  Thread (single-node):   $THREADS"
-echo "  SpMV Chunk Size (-c):   $CHUNK_SIZE"
-echo "  Norm Chunk Size (-nc):  $NORM_CHUNK"
 echo "  MPI nodes:              $MPI_NODES"
-echo "  MPI ranks:              $MPI_RANKS ($RANKS_PER_NODE ranks/node)"
-echo "  OMP threads/rank:       $OMP_THREADS_PER_RANK"
-echo "  Tolleranza numerica:    $TOLERANCE"
 echo "=========================================================="
 
 # ==========================================
 # 5. Esecuzione Sequenziale
 # ==========================================
-SEQ_DUMP_FLAG=""
-[ "$ENABLE_DUMP" = true ] && SEQ_DUMP_FLAG="--dump-vector $SEQ_DUMP_FILE"
-
-echo "Esecuzione Sequenziale..."
-run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" $SEQ_DUMP_FLAG
+echo "Esecuzione Sequenziale (Attenzione: impiegherà ~7 minuti)..."
+run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED"
 echo "----------------------------------------------------------"
 
 # ==========================================
 # 6. Esecuzione versioni a singolo nodo
 # ==========================================
 for entry in "${IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
-    dump_flag=""
-    [ "$ENABLE_DUMP" = true ] && dump_flag="--dump-vector $dump_file"
-
-    echo "Esecuzione $label (-t $THREADS, -c $CHUNK_SIZE, -nc $NORM_CHUNK)..."
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+    echo "Esecuzione $label (-t $th, -c $chk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
-        -t "$THREADS" -c "$CHUNK_SIZE" -nc "$NORM_CHUNK" -s "$SEED" $dump_flag
+        -t "$th" -c "$chk" -nc "$nchk" -s "$SEED"
     echo "----------------------------------------------------------"
 done
 
@@ -193,13 +159,10 @@ done
 # 7. Esecuzione versioni MPI+OpenMP
 # ==========================================
 for entry in "${MPI_IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
-    dump_flag=""
-    [ "$ENABLE_DUMP" = true ] && dump_flag="--dump-vector $dump_file"
-
-    echo "Esecuzione $label (mpirun -np $MPI_RANKS, OMP_NUM_THREADS=$OMP_THREADS_PER_RANK)..."
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+    echo "Esecuzione $label (Nodes: $MPI_NODES, MPI_Ranks: $MPI_RANKS, OMP_Threads: $OMP_THREADS_PER_RANK, -c $chk)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
-        -c "$CHUNK_SIZE" -nc "$NORM_CHUNK" -s "$SEED" $dump_flag
+        -c "$chk" -nc "$nchk" -s "$SEED"
     echo "----------------------------------------------------------"
 done
 
@@ -211,12 +174,11 @@ echo " RISULTATI CORRETTEZZA (Tolleranza: $TOLERANCE)"
 echo "=========================================================="
 
 for entry in "${IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     compare_to_seq "$label" "$dump_file"
 done
-
 for entry in "${MPI_IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     compare_to_seq "$label" "$dump_file"
 done
 
@@ -225,12 +187,12 @@ echo " RIEPILOGO TEMPI"
 echo "=========================================================="
 printf "  %-15s %10s s\n" "SEQ" "$SEQ_TIME"
 for entry in "${IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     t_var="${label}_TIME"
     printf "  %-15s %10s s\n" "$label" "${!t_var}"
 done
 for entry in "${MPI_IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file <<< "$entry"
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     t_var="${label}_TIME"
     printf "  %-15s %10s s\n" "$label" "${!t_var}"
 done
