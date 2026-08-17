@@ -15,8 +15,8 @@ set -euo pipefail
 SEQ_BIN="../iterative_SpMV"
 
 # Parametri del problema
-N=500000
-NZ=20000000
+N=1000
+NZ=1000
 MODE="irregular"
 SEED=111
 
