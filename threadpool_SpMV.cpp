@@ -34,15 +34,11 @@
 #include <utility>
 #include <vector>
 
-// ==========================================
-// 1. COSTANTI
-// ==========================================
+
 static constexpr std::uint32_t NUM_ITERS = 500; //[span_1](start_span)[span_1](end_span)
 static constexpr std::uint32_t EPOCH_LEN = 25;  //[span_2](start_span)[span_2](end_span)
 
-// ==========================================
-// 2. VECTOR OPERATIONS (Parallelizzate)
-// ==========================================
+
 static double dot_parallel(const std::vector<double>& a, 
                            const std::vector<double>& b, 
                            ThreadPool& pool, 
@@ -105,9 +101,7 @@ static void normalize_parallel(std::vector<double>& x,
     }
 }
 
-// ==========================================
-// 3. SHIFT
-// ==========================================
+
 static std::size_t compute_shift_rows(std::size_t n) {
     std::size_t s = n / 16 + 17; //[span_3](start_span)[span_3](end_span)
     if ((s % 2) == 0) ++s;       //[span_4](start_span)[span_4](end_span)
@@ -116,9 +110,7 @@ static std::size_t compute_shift_rows(std::size_t n) {
     return s;                    //[span_7](start_span)[span_7](end_span)
 }
 
-// ==========================================
-// 4. KERNEL PARALLELIZZATO
-// ==========================================
+
 static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
                                            std::size_t row_shift,
                                            const std::vector<double>& x,
@@ -152,9 +144,7 @@ static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
     }
 }
 
-// ==========================================
-// 5. FUNZIONE ITERATIVA E MAIN
-// ==========================================
+
 struct IterativeResult {
     double rayleigh             = 0.0;
     std::uint64_t checksum      = 0;
