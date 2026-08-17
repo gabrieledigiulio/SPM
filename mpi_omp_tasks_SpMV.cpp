@@ -512,7 +512,9 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
     #pragma omp parallel default(none) \
         shared(L, n, seed, plan, rank, chunk_size, norm_chunk_size, final_vector_out, \
                timers, result, row_shift, shift_rows, x_full, x_next, \
-               y_phys_local, y_phys_full)
+               y_phys_local, y_phys_full, \
+               ompi_mpi_comm_world, ompi_mpi_op_sum, ompi_mpi_double)
+
     {
         #pragma omp single
         {
