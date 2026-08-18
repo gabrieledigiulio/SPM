@@ -796,8 +796,7 @@ int main(int argc, char** argv) {
         }
         reduce_and_print_timer("Computation time (sec)", mpi_result.timers.local_computation_sec, num_ranks, rank);
         reduce_and_print_timer("SpMV time (sec)", mpi_result.timers.spmv_sec, num_ranks, rank);
-        reduce_and_print_timer("Vector dot time (sec)", mpi_result.timers.dot_sec, num_ranks, rank);
-        reduce_and_print_timer("Vector scale time (sec)", mpi_result.timers.scale_sec, num_ranks, rank);
+        reduce_and_print_timer("Vector ops time (sec)", mpi_result.timers.dot_sec + mpi_result.timers.scale_sec, num_ranks, rank);
         reduce_and_print_timer("Scatter time (sec)", mpi_result.timers.scatter_sec, num_ranks, rank);
         reduce_and_print_timer("Reduction time (sec)", mpi_result.timers.reduction_sec, num_ranks, rank);
         reduce_and_print_timer("Communication time (sec)", mpi_result.timers.communication_sec, num_ranks, rank);

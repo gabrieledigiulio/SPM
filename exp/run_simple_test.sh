@@ -61,9 +61,8 @@ MPI_IMPLS=(
 # 3. Funzioni di estrazione ed esecuzione
 # ==========================================
 extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_dot_time()  { grep -oP 'Vector dot time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_scale_time(){ grep -oP 'Vector scale time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
@@ -85,14 +84,13 @@ run_and_extract() {
     local out
     out=$("$@")
 
-    local comp_time spmv_time dot_time scale_time scatt_time comm_time red_time epoch_time imbalance
+    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
     comp_time=$(echo "$out" | extract_comp_time)
     if [ -z "$comp_time" ]; then
         comp_time=$(echo "$out" | extract_time)
     fi
+    vecops_time=$(echo "$out" | extract_vecops_time)
     spmv_time=$(echo "$out" | extract_spmv_time)
-    dot_time=$(echo "$out" | extract_dot_time)
-    scale_time=$(echo "$out" | extract_scale_time)
     scatt_time=$(echo "$out" | extract_scatt_time)
     comm_time=$(echo "$out" | extract_comm_time)
     red_time=$(echo "$out" | extract_red_time)
@@ -101,11 +99,10 @@ run_and_extract() {
 
     declare -g "${label}_TIME=${comp_time}"
     declare -g "${label}_COMP=${comp_time}"
+    declare -g "${label}_VECOPS=${vecops_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
     declare -g "${label}_SPMV=${spmv_time}"
-    declare -g "${label}_DOT=${dot_time}"
-    declare -g "${label}_SCALE=${scale_time}"
     declare -g "${label}_SCATT=${scatt_time}"
     declare -g "${label}_COMM=${comm_time}"
     declare -g "${label}_RED=${red_time}"
@@ -116,9 +113,8 @@ run_and_extract() {
     echo "  -> Computation: ${!t_var} s"
     echo "  -> Checksum:  ${!c_var}"
     echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "Vector ops" "$vecops_time"
     print_optional_metric "SpMV" "$spmv_time"
-    print_optional_metric "Vector dot" "$dot_time"
-    print_optional_metric "Vector scale" "$scale_time"
     print_optional_metric "Scatter" "$scatt_time"
     print_optional_metric "Communication" "$comm_time"
     print_optional_metric "Reduction" "$red_time"
@@ -133,14 +129,13 @@ run_and_extract_mpi() {
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
 
-    local comp_time spmv_time dot_time scale_time scatt_time comm_time red_time epoch_time imbalance
+    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
     comp_time=$(echo "$out" | extract_comp_time)
     if [ -z "$comp_time" ]; then
         comp_time=$(echo "$out" | extract_time)
     fi
+    vecops_time=$(echo "$out" | extract_vecops_time)
     spmv_time=$(echo "$out" | extract_spmv_time)
-    dot_time=$(echo "$out" | extract_dot_time)
-    scale_time=$(echo "$out" | extract_scale_time)
     scatt_time=$(echo "$out" | extract_scatt_time)
     comm_time=$(echo "$out" | extract_comm_time)
     red_time=$(echo "$out" | extract_red_time)
@@ -149,11 +144,10 @@ run_and_extract_mpi() {
 
     declare -g "${label}_TIME=${comp_time}"
     declare -g "${label}_COMP=${comp_time}"
+    declare -g "${label}_VECOPS=${vecops_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
     declare -g "${label}_SPMV=${spmv_time}"
-    declare -g "${label}_DOT=${dot_time}"
-    declare -g "${label}_SCALE=${scale_time}"
     declare -g "${label}_SCATT=${scatt_time}"
     declare -g "${label}_COMM=${comm_time}"
     declare -g "${label}_RED=${red_time}"
@@ -164,9 +158,8 @@ run_and_extract_mpi() {
     echo "  -> Computation: ${!t_var} s"
     echo "  -> Checksum:  ${!c_var}"
     echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "Vector ops" "$vecops_time"
     print_optional_metric "SpMV" "$spmv_time"
-    print_optional_metric "Vector dot" "$dot_time"
-    print_optional_metric "Vector scale" "$scale_time"
     print_optional_metric "Scatter" "$scatt_time"
     print_optional_metric "Communication" "$comm_time"
     print_optional_metric "Reduction" "$red_time"
