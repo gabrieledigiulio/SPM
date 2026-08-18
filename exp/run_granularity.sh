@@ -15,7 +15,7 @@ fi
 
 # Parametri del problema
 N=1000000
-NZ=25000000
+NZ=20000000
 MODE="irregular"
 SEED=111
 
