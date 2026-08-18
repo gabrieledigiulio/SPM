@@ -10,9 +10,9 @@ set -euo pipefail
 # ==========================================
 SEQ_BIN="../iterative_SpMV"
 
-# Parametri del problema (Problema "Largo" del report)
+# Parametri del problema (Taglia "piccola" per testing veloce)
 N=1000
-NZ=2000
+NZ=20000
 MODE="irregular"
 SEED=111
 
@@ -40,7 +40,7 @@ MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 # Tolleranza numerica
 TOLERANCE="1e-12"
 
-# Controllo del dump dei vettori (DISATTIVATO per problemi grandi come da report)
+# Controllo del dump dei vettori
 ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
 
@@ -69,9 +69,9 @@ extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -
 extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1 || true; }
+extract_time()      { extract_comp_time; }
 extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+' || true; }
 extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+' || true; }
-extract_time()      { extract_comp_time; }
 
 print_optional_metric() {
     local label="$1" value="$2"
@@ -174,6 +174,35 @@ run_and_extract_mpi() {
     print_optional_metric "Imbalance" "$imbalance"
 }
 
+compare_to_seq() {
+    local label="$1"
+    local dump_file="$2"
+
+    local seq_chk_var="SEQ_CHK" seq_ray_var="SEQ_RAY"
+    local par_chk_var="${label}_CHK" par_ray_var="${label}_RAY"
+
+    echo "--- $label vs SEQ ---"
+
+    if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
+        echo "  [INFO] Checksum Uguali (${!seq_chk_var})"
+    else
+        echo "  [INFO] Checksum Differenti"
+    fi
+
+    local diff_val check_result
+    diff_val=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" \
+        'BEGIN { d = s - p; if (d < 0) d = -d; printf "%.2e", d }')
+    check_result=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" -v tol="$TOLERANCE" \
+        'BEGIN { d = s - p; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
+
+    if [ "$check_result" == "PASS" ]; then
+        echo "  [OK] Rayleigh value: VALIDATO (Diff: $diff_val <= $TOLERANCE)"
+    else
+        echo "  [ERRORE] Rayleigh value: FUORI TOLLERANZA! (Diff: $diff_val > $TOLERANCE)"
+    fi
+    echo ""
+}
+
 # ==========================================
 # 4. Riepilogo configurazione
 # ==========================================
@@ -232,17 +261,17 @@ for entry in "${MPI_IMPLS[@]}"; do
 done
 
 echo "=========================================================="
-echo " RIEPILOGO TEMPI"
+echo " RIEPILOGO TEMPI COMPLESSIVI"
 echo "=========================================================="
-printf "  %-15s %10s s\n" "SEQ" "$SEQ_TIME"
+printf "  %-15s %10s s\n" "SEQ" "${SEQ_TIME:-N/A}"
 for entry in "${IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     t_var="${label}_TIME"
-    printf "  %-15s %10s s\n" "$label" "${!t_var}"
+    printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
 done
 for entry in "${MPI_IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     t_var="${label}_TIME"
-    printf "  %-15s %10s s\n" "$label" "${!t_var}"
+    printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
 done
 echo "=========================================================="
