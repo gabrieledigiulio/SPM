@@ -60,18 +60,18 @@ MPI_IMPLS=(
 # ==========================================
 # 3. Funzioni di estrazione ed esecuzione
 # ==========================================
-extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1; }
-extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1; }
-extract_dot_time()  { grep -oP 'Vector dot time \(sec\) = \K[0-9.]+' | head -1; }
-extract_scale_time(){ grep -oP 'Vector scale time \(sec\) = \K[0-9.]+' | head -1; }
-extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1; }
-extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1; }
-extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1; }
-extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1; }
-extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1; }
+extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_dot_time()  { grep -oP 'Vector dot time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_scale_time(){ grep -oP 'Vector scale time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1 || true; }
+extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+' || true; }
+extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+' || true; }
 extract_time()      { extract_comp_time; }
-extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+'; }
-extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+'; }
 
 print_optional_metric() {
     local label="$1" value="$2"
@@ -172,35 +172,6 @@ run_and_extract_mpi() {
     print_optional_metric "Reduction" "$red_time"
     print_optional_metric "Epoch transition" "$epoch_time"
     print_optional_metric "Imbalance" "$imbalance"
-}
-
-compare_to_seq() {
-    local label="$1"
-    local dump_file="$2"
-
-    local seq_chk_var="SEQ_CHK" seq_ray_var="SEQ_RAY"
-    local par_chk_var="${label}_CHK" par_ray_var="${label}_RAY"
-
-    echo "--- $label vs SEQ ---"
-
-    if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
-        echo "  [INFO] Checksum Uguali (${!seq_chk_var})"
-    else
-        echo "  [INFO] Checksum Differenti"
-    fi
-
-    local diff_val check_result
-    diff_val=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" \
-        'BEGIN { d = s - p; if (d < 0) d = -d; printf "%.2e", d }')
-    check_result=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" -v tol="$TOLERANCE" \
-        'BEGIN { d = s - p; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
-
-    if [ "$check_result" == "PASS" ]; then
-        echo "  [OK] Rayleigh value: VALIDATO (Diff: $diff_val <= $TOLERANCE)"
-    else
-        echo "  [ERRORE] Rayleigh value: FUORI TOLLERANZA! (Diff: $diff_val > $TOLERANCE)"
-    fi
-    echo ""
 }
 
 # ==========================================
