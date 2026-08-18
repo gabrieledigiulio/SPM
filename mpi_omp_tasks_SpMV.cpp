@@ -15,6 +15,12 @@
 //     vector after the Allgatherv, this permutation requires zero network
 //     traffic -- it's a local reordering, parallelized with OpenMP.
 //
+// Threading model: MPI is initialized with MPI_THREAD_FUNNELED. ALL MPI
+// calls (Allreduce, Allgatherv, Bcast, ...) happen from the single OpenMP
+// thread that executes the "#pragma omp single" block -- never from inside
+// a task. This is required for correctness when mixing MPI with OpenMP
+// tasks, and is verified explicitly at startup (see main()).
+//
 // Istruzioni di compilazione:
 //   mpic++ -O3 -std=c++20 -fopenmp -I . -Wall mpi_omp_SpMV.cpp -o mpi_omp_SpMV
 //
@@ -22,12 +28,12 @@
 //   -n   Dimensione della matrice, NxN
 //   -nz  Numero totale di elementi non nulli
 //   -m   Modalità della matrice: regular o irregular
+//   -t   Numero di thread OpenMP per processo (default: valore di OMP_NUM_THREADS)
 //   -c   Dimensione del chunk per SpMV locale (default: 1000)
 //   -nc  Dimensione del chunk per operazioni vettoriali locali (0 = automatico)
 //   -s   Seed opzionale (default: 111)
 //   --dump-vector FILE
 //        File di output opzionale per il vettore normalizzato finale
-//   (i thread OpenMP per processo si controllano con OMP_NUM_THREADS)
 //
 // Esempio (4 nodi, 4 processi, 4 thread ciascuno):
 //   mpirun -np 4 -x OMP_NUM_THREADS=4 ./mpi_omp_SpMV -n 500000 -nz 20000000 -m irregular
@@ -40,7 +46,6 @@
 #include <omp.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -185,7 +190,9 @@ static LocalMatrix recv_local_matrix(int source_rank) {
 //
 // generation_sec e distribution_sec sono tempi diagnostici, ESCLUSI dalla
 // regione temporizzata del calcolo iterativo (come nel sequenziale, dove
-// la generazione non e' parte del "computation time").
+// la generazione non e' parte del "computation time"). Usiamo MPI_Wtime
+// per coerenza con tutti gli altri timer del file (MPI_Init e' gia'
+// avvenuto quando questa funzione viene chiamata).
 //
 // Nota di robustezza: se generate_matrix lancia un'eccezione sul rank 0,
 // gli altri rank sarebbero bloccati per sempre sulla MPI_Bcast successiva
@@ -206,15 +213,14 @@ static LocalMatrix setup_and_distribute(std::size_t n, std::uint64_t nz,
         std::string error_msg;
         GeneratedMatrix G;
 
-        const auto tg0 = std::chrono::steady_clock::now();
+        const double tg0 = MPI_Wtime();
         try {
             G = generate_matrix(n, nz, seed, mode);
         } catch (const std::exception& e) {
             ok = 0;
             error_msg = e.what();
         }
-        const auto tg1 = std::chrono::steady_clock::now();
-        generation_sec = std::chrono::duration<double>(tg1 - tg0).count();
+        generation_sec = MPI_Wtime() - tg0;
 
         MPI_Bcast(&ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
         if (!ok) {
@@ -228,11 +234,10 @@ static LocalMatrix setup_and_distribute(std::size_t n, std::uint64_t nz,
 
         // Bcast: tutti i rank devono conoscere il partizionamento completo
         // per calcolare autonomamente i counts/displs fissi dell'Allgatherv
-        // usato nel ciclo iterativo (root = rank 0, invio in un colpo solo,
-        // piu' idiomatico e sicuro del loop manuale di Send precedente).
+        // usato nel ciclo iterativo.
         MPI_Bcast(all_blocks.data(), num_ranks * 2, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
-        const auto td0 = std::chrono::steady_clock::now();
+        const double td0 = MPI_Wtime();
 
         LocalMatrix local;
         for (int r = 0; r < num_ranks; ++r) {
@@ -244,8 +249,7 @@ static LocalMatrix setup_and_distribute(std::size_t n, std::uint64_t nz,
             }
         }
 
-        const auto td1 = std::chrono::steady_clock::now();
-        distribution_sec = std::chrono::duration<double>(td1 - td0).count();
+        distribution_sec = MPI_Wtime() - td0;
 
         return local;
     } else {
@@ -452,28 +456,33 @@ static void apply_shift_permutation_omp_tasks(const std::vector<double>& y_phys_
 // 6. CICLO ITERATIVO IBRIDO (MPI + OpenMP)
 // ==========================================
 
-// Breakdown dei tempi richiesto dal report. Tutti i campi sono espressi in
-// secondi e vengono accumulati (+=) iterazione per iterazione dentro il
-// thread "single" che guida il loop -- nessuna sincronizzazione necessaria
-// per scriverli, dato che un solo thread li tocca.
+// Breakdown dei tempi richiesto dal report. Tutti i campi hanno un
+// inizializzatore di default (buona pratica difensiva: qualsiasi lettura
+// accidentale prima della prima misura restituisce 0.0, non un valore
+// indeterminato). Accumulati (+=) dal thread "single": nessuna
+// sincronizzazione necessaria, un solo thread li tocca.
 struct ExecutionTimers {
-    double init_sec              = 0.0; // generazione + normalizzazione iniziale di x (fuori loop, non "per iterazione")
-    double local_compute_sec     = 0.0; // spmv locale + dot locale + scale locale + permutazione (mai comunicazione)
+    double init_sec              = 0.0; // init di x + normalizzazione iniziale (fuori dal loop)
+    double local_computation_sec = 0.0; // spmv locale + dot/scale locali + permutazione (mai comunicazione)
+    double spmv_sec              = 0.0;
+    double dot_sec               = 0.0;
+    double scale_sec             = 0.0;
+    double scatter_sec           = 0.0;
     double reduction_sec         = 0.0; // MPI_Allreduce (norma, scalare 8 byte)
     double communication_sec     = 0.0; // MPI_Allgatherv (vettore, n*8 byte)
     double epoch_transition_sec  = 0.0; // aggiornamento di row_shift (atteso ~0, lo misuriamo per dimostrarlo)
-    double total_sec             = 0.0; // l'intera iterative_spmv_evolving_mpi_omp, init+loop+fase finale
+    double total_sec             = 0.0; // l'intera funzione: init + loop + fase diagnostica finale
 };
 
 struct IterativeResult {
-    double rayleigh;
-    std::uint64_t checksum;
-    std::size_t final_row_shift;
+    double rayleigh             = 0.0;
+    std::uint64_t checksum      = 0;
+    std::size_t final_row_shift = 0;
 };
 
 struct MpiIterativeResult {
-    IterativeResult result;   // rayleigh, checksum, final_row_shift -- validi SOLO su rank 0
-    ExecutionTimers timers;   // validi su OGNI rank (per l'analisi di imbalance nel report)
+    IterativeResult result;   // rayleigh/checksum/final_row_shift -- validi SOLO su rank 0
+    ExecutionTimers timers;   // validi su OGNI rank (necessari per l'analisi di imbalance)
 };
 
 // L               : sottomatrice fisica locale di questo rank (mai modificata)
@@ -481,8 +490,7 @@ struct MpiIterativeResult {
 // plan             : counts/displs fissi per l'Allgatherv, calcolati una volta in main()
 // chunk_size       : granularita' dei task SpMV (righe fisiche locali)
 // norm_chunk_size  : granularita' dei task per dot/scale/permutazione
-// final_vector_out : se non nullptr, riceve x finale COMPLETO -- va popolato solo su rank 0
-//                    (e' l'unico rank che scrive il dump, coerente col resto del progetto)
+// final_vector_out : se non nullptr, riceve x finale COMPLETO -- popolato solo su rank 0
 static MpiIterativeResult
 iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                                 std::uint64_t seed,
@@ -499,132 +507,143 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
 
     // Buffer allocati UNA VOLTA, riusati per tutte le 500 iterazioni (mai
     // resize dentro il loop: sarebbe rumore di allocazione nel timing).
-    std::vector<double> x_full(n);              // vettore logico completo, replicato su ogni rank
-    std::vector<double> x_next(n);               // buffer di destinazione della permutazione
-    std::vector<double> y_phys_local(L.num_rows); // output SpMV locale, indicizzato per riga FISICA
-    std::vector<double> y_phys_full(n);           // dopo l'Allgatherv, indicizzato per riga FISICA
-
-    const auto t_total0 = std::chrono::steady_clock::now();
-    (void)t_total0; // usiamo MPI_Wtime per i timer fini, steady_clock non serve qui
+    std::vector<double> x_full(n);                // vettore logico completo, replicato su ogni rank
+    std::vector<double> x_next(n);                // buffer di destinazione della permutazione
+    std::vector<double> y_phys(L.num_rows);        // output SpMV locale, indicizzato per riga FISICA
+    std::vector<double> y_phys_full(n);            // dopo l'Allgatherv, indicizzato per riga FISICA
 
     const double t_start = MPI_Wtime();
 
-    #pragma omp parallel default(none) \
-        shared(L, n, seed, plan, rank, chunk_size, norm_chunk_size, final_vector_out, \
-               timers, result, row_shift, shift_rows, x_full, x_next, \
-               y_phys_local, y_phys_full, \
-               ompi_mpi_comm_world, ompi_mpi_op_sum, ompi_mpi_double)
-
+    // Nota sul data-sharing: la regione "parallel" qui sotto usa
+    // default(shared) invece di default(none). Motivo: le chiamate MPI
+    // (MPI_Allreduce, MPI_Allgatherv) referenziano macro come MPI_COMM_WORLD
+    // / MPI_DOUBLE / MPI_SUM, che nelle implementazioni MPI (es. Open MPI)
+    // espandono a simboli globali interni non standard (es.
+    // "ompi_mpi_comm_world"). Elencarli esplicitamente in una clausola
+    // shared() legherebbe il codice a un'implementazione MPI specifica,
+    // rompendo la portabilita' (es. su MPICH non compilerebbe piu'). Dato
+    // che questo livello esterno ha un solo punto di reale esecuzione (il
+    // thread "single"), default(shared) qui e' innocuo: il rigore di
+    // default(none) resta dove conta davvero, cioe' su ogni "#pragma omp
+    // task" qui sotto, dove piu' thread eseguono realmente in parallelo.
+    #pragma omp parallel
     {
         #pragma omp single
         {
-            // ---- Fase 0: init di x (identica su ogni rank, deterministica) ----
-            // Ogni rank genera l'INTERO x con lo stesso seed: e' ridondante
-            // (O(n) per rank) ma evita di dover distribuire x a inizio run.
-            // Costo trascurabile una tantum, per questo va nel timer "init",
-            // separato dal breakdown per-iterazione.
+            // ---- Fase 0: inizializzazione di x (identica al sequenziale) ----
             const double t_init0 = MPI_Wtime();
 
+            // Il flusso RNG deve restare rigorosamente sequenziale (single
+            // thread) per generare la stessa sequenza del riferimento.
             SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
             for (double& v : x_full) {
                 v = rng.next_unit();
             }
 
-            // Normalizzazione iniziale: qui x_full e' gia' COMPLETO e identico
-            // su ogni rank, quindi -- a differenza del pattern per-iterazione --
-            // non basta scalare la propria fetta fisica: bisogna scalare tutto
-            // x_full (0..n), altrimenti ogni rank avrebbe un x diverso dopo
-            // l'operazione. Il dot locale invece si fa sulla PROPRIA fetta
-            // fisica per riusare lo stesso pattern local_dot -> Allreduce.
-            const double local_sq0 = local_dot_omp_tasks(x_full, x_full,
-                                                          L.row_begin, L.num_rows,
-                                                          norm_chunk_size);
-            double global_sq0 = 0.0;
-
-            #pragma omp taskwait // local_dot_omp_tasks usa taskgroup, quindi e' gia' sincrono; il taskwait qui e' difensivo
+            // Normalizzazione iniziale: x_full e' GIA' identico e completo
+            // su ogni rank (stesso seed, stesso flusso RNG deterministico),
+            // quindi la riduzione e' puramente locale -- zero comunicazione,
+            // a differenza del pattern per-iterazione dove i dati sono
+            // fisicamente distribuiti e serve un vero MPI_Allreduce.
             {
-                const double t_red0 = MPI_Wtime();
-                MPI_Allreduce(&local_sq0, &global_sq0, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-                timers.reduction_sec += MPI_Wtime() - t_red0;
+                const double sumsq = local_dot_omp_tasks(x_full, x_full, 0, n, norm_chunk_size);
+                const double inv = 1.0 / std::sqrt(sumsq);
+                local_scale_omp_tasks(x_full, 0, n, inv, norm_chunk_size);
             }
-
-            const double inv0 = 1.0 / std::sqrt(global_sq0);
-            local_scale_omp_tasks(x_full, 0, n, inv0, norm_chunk_size);
 
             timers.init_sec = MPI_Wtime() - t_init0;
 
             // ---- Fase 1: loop principale, NUM_ITERS iterazioni ----
             for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
-                const double t_epoch0 = MPI_Wtime();
                 if (iter > 0 && (iter % EPOCH_LEN) == 0) {
+                    const double te0 = MPI_Wtime();
                     row_shift = (row_shift + shift_rows) % n;
+                    timers.epoch_transition_sec += MPI_Wtime() - te0;
                 }
-                timers.epoch_transition_sec += MPI_Wtime() - t_epoch0;
 
-                // --- SpMV locale: nessuna comunicazione, opera solo su L e x_full ---
-                const double t_comp0 = MPI_Wtime();
-                spmv_local_omp_tasks(L, x_full, y_phys_local, chunk_size);
-                #pragma omp taskwait // spmv_local_omp_tasks NON ha un taskgroup interno: serve qui esplicito
-                timers.local_compute_sec += MPI_Wtime() - t_comp0;
+                // (a) SpMV locale: produce y_phys, indicizzato per riga fisica.
+                const double tc0 = MPI_Wtime();
+                spmv_local_omp_tasks(L, x_full, y_phys, chunk_size);
+                #pragma omp taskwait
+                const double spmv_elapsed = MPI_Wtime() - tc0;
+                timers.local_computation_sec += spmv_elapsed;
+                timers.spmv_sec += spmv_elapsed;
 
-                // --- Norma locale (sulla propria fetta fisica) + riduzione globale ---
-                const double t_comp1 = MPI_Wtime();
-                const double local_sq = local_dot_omp_tasks(y_phys_local, y_phys_local,
-                                                             0, L.num_rows, norm_chunk_size);
-                timers.local_compute_sec += MPI_Wtime() - t_comp1;
+                // (b) Somma dei quadrati locale (sulla propria fetta fisica).
+                const double tc1 = MPI_Wtime();
+                const double sumsq_local = local_dot_omp_tasks(y_phys, y_phys, 0, L.num_rows, norm_chunk_size);
+                const double dot_elapsed = MPI_Wtime() - tc1;
+                timers.local_computation_sec += dot_elapsed;
+                timers.dot_sec += dot_elapsed;
 
-                double global_sq = 0.0;
-                const double t_red1 = MPI_Wtime();
-                MPI_Allreduce(&local_sq, &global_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-                timers.reduction_sec += MPI_Wtime() - t_red1;
+                // (c) Allreduce globale: comunicazione minuscola, un solo double.
+                double sumsq_global = 0.0;
+                const double tr0 = MPI_Wtime();
+                MPI_Allreduce(&sumsq_local, &sumsq_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+                timers.reduction_sec += MPI_Wtime() - tr0;
 
-                // --- Scala SOLO la fetta locale (decisione #1: massima localita') ---
-                const double t_comp2 = MPI_Wtime();
-                const double inv = 1.0 / std::sqrt(global_sq);
-                local_scale_omp_tasks(y_phys_local, 0, L.num_rows, inv, norm_chunk_size);
-                timers.local_compute_sec += MPI_Wtime() - t_comp2;
+                const double inv = 1.0 / std::sqrt(sumsq_global);
 
-                // --- Allgatherv: ricompone il vettore fisico completo su ogni rank ---
-                const double t_comm0 = MPI_Wtime();
-                gather_full_vector(y_phys_local, y_phys_full, plan);
-                timers.communication_sec += MPI_Wtime() - t_comm0;
+                // (d) Normalizza SOLO la fetta locale (piu' efficiente che
+                // farlo dopo il gather, che sarebbe O(n) ridondante ovunque).
+                const double tc2 = MPI_Wtime();
+                local_scale_omp_tasks(y_phys, 0, L.num_rows, inv, norm_chunk_size);
+                const double scale_elapsed = MPI_Wtime() - tc2;
+                timers.local_computation_sec += scale_elapsed;
+                timers.scale_sec += scale_elapsed;
 
-                // --- Permutazione: riordino locale fisico -> logico, zero rete ---
-                const double t_comp3 = MPI_Wtime();
-                apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, norm_chunk_size);
-                timers.local_compute_sec += MPI_Wtime() - t_comp3;
+                // (e) Allgatherv: assembla il vettore fisico completo.
+                const double tcm0 = MPI_Wtime();
+                gather_full_vector(y_phys, y_phys_full, plan);
+                timers.communication_sec += MPI_Wtime() - tcm0;
 
-                x_full.swap(x_next); // O(1), scambio di buffer
+                // (f) Permutazione locale: applica row_shift, produce x_next.
+                const double tc3 = MPI_Wtime();
+                apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, chunk_size);
+                x_full.swap(x_next);
+                const double scatter_elapsed = MPI_Wtime() - tc3;
+                timers.local_computation_sec += scatter_elapsed;
+                timers.scatter_sec += scatter_elapsed;
             }
 
             // ---- Fase 2: passo finale per il valore Rayleigh-like ----
-            // Stessa sequenza SpMV + Allgatherv + permutazione, MA senza
-            // normalizzare (coerente col sequenziale: l'ultimo SpMV serve
-            // solo per il dot finale, non per continuare l'iterazione).
-            const double t_final0 = MPI_Wtime();
-            spmv_local_omp_tasks(L, x_full, y_phys_local, chunk_size);
+            // Stessa sequenza SpMV + Allgatherv, MA senza normalizzare
+            // (coerente col sequenziale: l'ultimo SpMV serve solo per il
+            // dot finale, non per continuare l'iterazione).
+            //
+            // spmv_local e gather_full_vector sono chiamate collettive/di
+            // gruppo: DEVONO essere eseguite da ogni rank, anche se solo il
+            // rank 0 user\a poi il risultato (altrimenti l'Allgatherv si
+            // blocca in attesa di rank che non arrivano mai alla chiamata).
+            const double tf0 = MPI_Wtime();
+            spmv_local_omp_tasks(L, x_full, y_phys, chunk_size);
             #pragma omp taskwait
-            timers.local_compute_sec += MPI_Wtime() - t_final0;
+            const double final_spmv_elapsed = MPI_Wtime() - tf0;
+            timers.local_computation_sec += final_spmv_elapsed;
+            timers.spmv_sec += final_spmv_elapsed;
 
-            const double t_comm_final = MPI_Wtime();
-            gather_full_vector(y_phys_local, y_phys_full, plan);
-            timers.communication_sec += MPI_Wtime() - t_comm_final;
+            const double tfc0 = MPI_Wtime();
+            gather_full_vector(y_phys, y_phys_full, plan);
+            timers.communication_sec += MPI_Wtime() - tfc0;
 
-            const double t_perm_final = MPI_Wtime();
-            apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, norm_chunk_size);
-            timers.local_compute_sec += MPI_Wtime() - t_perm_final;
-            // x_next ora contiene "y" in ordine logico; x_full e' ancora "x"
-
-            // ---- Fase 3: rayleigh + checksum SOLO su rank 0 (decisione #3) ----
-            // x_full e x_next sono gia' repliche complete e identiche su ogni
-            // rank grazie all'Allgatherv, quindi calcolarli su rank 0 e basta
-            // e' corretto e non richiede nessuna comunicazione aggiuntiva.
+            // La permutazione finale e il calcolo di rayleigh/checksum sono
+            // invece puro lavoro LOCALE (non collettivo): possiamo
+            // limitarli al solo rank 0, che e' l'unico a doverne fare uso
+            // (stampa risultati, eventuale dump del vettore).
             if (rank == 0) {
-                double rayleigh = 0.0;
-                for (std::size_t i = 0; i < n; ++i) {
-                    rayleigh += x_full[i] * x_next[i];
-                }
-                result.rayleigh = rayleigh;
+                const double tp0 = MPI_Wtime();
+                apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, chunk_size);
+                const double final_scatter_elapsed = MPI_Wtime() - tp0;
+                timers.local_computation_sec += final_scatter_elapsed;
+                timers.scatter_sec += final_scatter_elapsed;
+                // x_next ora contiene "y" (logico) = A_shifted * x_full;
+                // x_full resta il vettore finale da riportare (NON swap qui).
+
+                const double tdot0 = MPI_Wtime();
+                result.rayleigh = local_dot_omp_tasks(x_full, x_next, 0, n, norm_chunk_size);
+                const double final_dot_elapsed = MPI_Wtime() - tdot0;
+                timers.local_computation_sec += final_dot_elapsed;
+                timers.dot_sec += final_dot_elapsed;
                 result.checksum = checksum_vector(x_full);
                 result.final_row_shift = row_shift;
 
@@ -632,14 +651,13 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                     *final_vector_out = x_full;
                 }
             }
-        } // fine single (barrier implicita)
-    } // fine parallel
 
-    timers.total_sec = MPI_Wtime() - t_start;
+            timers.total_sec = MPI_Wtime() - t_start;
+        } // fine single (barrier implicita in uscita)
+    } // fine parallel
 
     return MpiIterativeResult{result, timers};
 }
-
 
 // ==========================================
 // 7. MAIN
@@ -649,41 +667,62 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
 // massimo (il rank piu' lento domina il tempo percepito) sia la media
 // (utile per capire quanto e' distribuito lo sbilanciamento). Entrambi i
 // valori finiscono nel report per l'analisi "interazione MPI/OpenMP" e
-// "bottleneck di scalabilita'" richiesta dalla consegna.
-static void reduce_and_print_timer(const char* label, double local_value,
-                                   int num_ranks) {
+// "bottleneck di scalabilita'" richiesta dalla consegna. Ritorna il
+// massimo, cosi' il chiamante puo' riusarlo (es. per il "Time (sec) ="
+// finale, nello stesso formato delle altre implementazioni del progetto).
+static double reduce_and_print_timer(const char* label, double local_value,
+                                     int num_ranks, int rank) {
     double max_value = 0.0;
     double sum_value = 0.0;
 
     MPI_Reduce(&local_value, &max_value, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_value, &sum_value, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if (rank == 0) {
         const double avg_value = sum_value / static_cast<double>(num_ranks);
-        std::cout << label
+        std::cout << label << " = " << max_value << "\n";
+        std::cout << "  " << label
                   << " avg=" << avg_value
                   << " max=" << max_value
                   << " imbalance=" << (max_value - avg_value) << "\n";
     }
+
+    return max_value;
 }
 
 int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
+    // MPI_THREAD_FUNNELED: richiesto esplicitamente perche' mescoliamo
+    // MPI e task OpenMP. Tutte le chiamate MPI avvengono dal thread
+    // "single" (mai da dentro un task), quindi FUNNELED e' sufficiente
+    // (non serve il piu' costoso MPI_THREAD_MULTIPLE). Verifichiamo che
+    // l'implementazione lo conceda davvero, invece di assumerlo.
+    int provided = MPI_THREAD_SINGLE;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
 
     int rank = 0, num_ranks = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
 
-    std::uint64_t n64 = 0;
-    std::uint64_t nz  = 0;
+    if (provided < MPI_THREAD_FUNNELED) {
+        if (rank == 0) {
+            std::cerr << "Error: l'implementazione MPI non supporta MPI_THREAD_FUNNELED "
+                      << "(richiesto per mescolare MPI e task OpenMP in sicurezza)\n";
+        }
+        MPI_Abort(MPI_COMM_WORLD, 1);
+        return 1;
+    }
+
+    std::uint64_t n64  = 0;
+    std::uint64_t nz   = 0;
     std::uint64_t seed = 111;
+    std::uint64_t threads_arg = 0; // 0 = non specificato, usa OMP_NUM_THREADS
     std::uint64_t chunk_size = 1000;
     std::uint64_t norm_chunk_arg = 0;
     std::string mode;
     std::string dump_vector_path;
 
+    // argv e' identico su ogni rank (mpirun lo replica), quindi ogni
+    // processo puo' fare il parsing in modo indipendente, senza broadcast.
     const bool args_ok = read_arg_u64(argc, argv, "-n", n64) &&
                          read_arg_u64(argc, argv, "-nz", nz) &&
                          read_arg_str(argc, argv, "-m", mode);
@@ -691,30 +730,33 @@ int main(int argc, char** argv) {
     if (!args_ok) {
         if (rank == 0) {
             std::cerr << "Uso: " << argv[0]
-                      << " -n N -nz K -m regular|irregular [-c CHUNK] [-nc NORM_CHUNK] [-s SEED] [--dump-vector FILE]\n";
+                      << " -n N -nz K -m regular|irregular [-t THREADS] [-c CHUNK_SIZE] "
+                      << "[-nc NORM_CHUNK_SIZE] [-s SEED] [--dump-vector FILE]\n";
         }
         MPI_Finalize();
         return 1;
     }
 
     (void)read_arg_u64(argc, argv, "-s", seed);
+    (void)read_arg_u64(argc, argv, "-t", threads_arg);
     (void)read_arg_u64(argc, argv, "-c", chunk_size);
     (void)read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
     (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
     const std::size_t n = static_cast<std::size_t>(n64);
 
-    // Chunk automatico per le operazioni vettoriali locali: dimensionato
-    // sui thread OpenMP di QUESTO rank (non sul totale globale di thread
-    // nel job, che non avrebbe senso per un chunk locale).
+    if (threads_arg > 0) {
+        omp_set_num_threads(static_cast<int>(threads_arg));
+    }
     const int omp_threads = omp_get_max_threads();
+
     const std::size_t norm_chunk_size = (norm_chunk_arg == 0)
         ? std::max<std::size_t>(1, (n + static_cast<std::size_t>(omp_threads) - 1) / static_cast<std::size_t>(omp_threads))
         : static_cast<std::size_t>(norm_chunk_arg);
 
     if (rank == 0) {
         std::cout << "SPARSE_ITERATION_MPI_OMP\n";
-        std::cout << "MPI ranks: " << num_ranks << " | OMP threads/rank: " << omp_threads << "\n";
+        std::cout << "MPI Ranks: " << num_ranks << " | OpenMP Threads/rank: " << omp_threads << "\n";
         std::cout << "SpMV Chunk Size: " << chunk_size << " | Norm Chunk Size: " << norm_chunk_size << "\n";
     }
 
@@ -726,28 +768,43 @@ int main(int argc, char** argv) {
         const LocalMatrix L = setup_and_distribute(n, nz, seed, mode, rank, num_ranks,
                                                     all_blocks, generation_sec, distribution_sec);
 
-        const AllgatherPlan plan = build_allgather_plan(all_blocks);
-
         if (rank == 0) {
             std::cout << "distribution_time_sec=" << distribution_sec << "\n\n";
         }
 
-        std::vector<double> final_vector;
+        const AllgatherPlan plan = build_allgather_plan(all_blocks);
+
+        std::vector<double>  final_vector;
         std::vector<double>* final_vector_out =
             (rank == 0 && !dump_vector_path.empty()) ? &final_vector : nullptr;
+
+        // Allinea tutti i rank prima di avviare il timer totale: senza
+        // questa barriera, rank che finiscono il setup in tempi diversi
+        // (es. rank 0 che ha appena finito di spedire i dati agli altri)
+        // partirebbero con orologi sfalsati, distorcendo l'attribuzione
+        // del tempo nella primissima iterazione (tra "reduction"/"comm"
+        // di attesa e "local_computation" vero).
+        MPI_Barrier(MPI_COMM_WORLD);
 
         const MpiIterativeResult mpi_result =
             iterative_spmv_evolving_mpi_omp(L, n, seed, plan, rank,
                                             static_cast<std::size_t>(chunk_size),
                                             norm_chunk_size, final_vector_out);
 
-        // Breakdown per-rank ridotto su rank 0 (avg + max, vedi commento sopra)
-        reduce_and_print_timer("init_sec",             mpi_result.timers.init_sec,             num_ranks);
-        reduce_and_print_timer("local_compute_sec",    mpi_result.timers.local_compute_sec,    num_ranks);
-        reduce_and_print_timer("reduction_sec",        mpi_result.timers.reduction_sec,        num_ranks);
-        reduce_and_print_timer("communication_sec",    mpi_result.timers.communication_sec,    num_ranks);
-        reduce_and_print_timer("epoch_transition_sec", mpi_result.timers.epoch_transition_sec, num_ranks);
-        reduce_and_print_timer("total_sec",             mpi_result.timers.total_sec,             num_ranks);
+        if (rank == 0) {
+            std::cout << "Breakdown tempi (secondi, aggregati su " << num_ranks << " rank):\n";
+        }
+        reduce_and_print_timer("Computation time (sec)", mpi_result.timers.local_computation_sec, num_ranks, rank);
+        reduce_and_print_timer("SpMV time (sec)", mpi_result.timers.spmv_sec, num_ranks, rank);
+        reduce_and_print_timer("Vector dot time (sec)", mpi_result.timers.dot_sec, num_ranks, rank);
+        reduce_and_print_timer("Vector scale time (sec)", mpi_result.timers.scale_sec, num_ranks, rank);
+        reduce_and_print_timer("Scatter time (sec)", mpi_result.timers.scatter_sec, num_ranks, rank);
+        reduce_and_print_timer("Reduction time (sec)", mpi_result.timers.reduction_sec, num_ranks, rank);
+        reduce_and_print_timer("Communication time (sec)", mpi_result.timers.communication_sec, num_ranks, rank);
+        reduce_and_print_timer("Epoch transition (sec)", mpi_result.timers.epoch_transition_sec, num_ranks, rank);
+        reduce_and_print_timer("Init time (sec)", mpi_result.timers.init_sec, num_ranks, rank);
+        const double total_sec_max =
+            reduce_and_print_timer("Total time (sec)", mpi_result.timers.total_sec, num_ranks, rank);
 
         if (rank == 0) {
             std::cout << std::setprecision(15);
@@ -755,7 +812,7 @@ int main(int argc, char** argv) {
             std::cout << "checksum=0x" << std::hex << mpi_result.result.checksum << std::dec << "\n";
 
             std::cout << std::fixed << std::setprecision(6);
-            std::cout << "Time (sec) = " << mpi_result.timers.total_sec << "\n";
+            std::cout << "Time (sec) = " << total_sec_max << "\n";
 
             if (!dump_vector_path.empty()) {
                 dump_vector(dump_vector_path, final_vector);
@@ -763,9 +820,10 @@ int main(int argc, char** argv) {
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "[rank " << rank << "] Error: " << e.what() << "\n";
-        MPI_Abort(MPI_COMM_WORLD, 1);
-        MPI_Finalize();
+        if (rank == 0) {
+            std::cerr << "Error: " << e.what() << "\n";
+        }
+        MPI_Abort(MPI_COMM_WORLD, 1); // evita che gli altri rank restino bloccati
         return 1;
     }
 

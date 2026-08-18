@@ -1,22 +1,5 @@
 // ==============================================================================
 // SPM "One-Shot" Project - OpenMP Task-Based Implementation
-//
-// Istruzioni di compilazione:
-//   g++ -O3 -std=c++20 -fopenmp -I . -Wall omp_tasks_SpMV.cpp -o omp_tasks_SpMV
-//
-// Istruzioni di esecuzione:
-//   -n   Dimensione della matrice, NxN
-//   -nz  Numero totale di elementi non nulli
-//   -m   Modalità della matrice: regular o irregular
-//   -t   Numero di thread OpenMP da utilizzare (default: 4)
-//   -c   Dimensione del chunk per SpMV (default: 1000)
-//   -nc  Dimensione del chunk per operazioni vettoriali (0 = automatico, default: 0)
-//   -s   Seed opzionale (default: 111)
-//   --dump-vector FILE
-//        File di output opzionale per il vettore normalizzato finale
-//
-// Esempio per test scaling e granularità:
-//   ./omp_tasks_SpMV -n 500000 -nz 20000000 -m irregular -t 4 -c 1000 -nc 0
 // ==============================================================================
 
 #include "matrix_generation.hpp"
@@ -36,20 +19,34 @@
 #include <vector>
 
 // ==========================================
-// 1. COSTANTI
+// 1. COSTANTI E STRUTTURE
 // ==========================================
 static constexpr std::uint32_t NUM_ITERS = 500;
 static constexpr std::uint32_t EPOCH_LEN = 25;
+
+struct ExecutionTimers {
+    double init_sec              = 0.0;
+    double spmv_sec              = 0.0;
+    double vector_ops_sec        = 0.0;
+    double epoch_transition_sec  = 0.0;
+    double total_sec             = 0.0;
+};
+
+struct IterativeResult {
+    double rayleigh             = 0.0;
+    std::uint64_t checksum      = 0;
+    std::size_t final_row_shift = 0;
+};
+
+struct OmpIterativeResult {
+    IterativeResult result;
+    ExecutionTimers timers;
+};
 
 // ==========================================
 // 2. OPERAZIONI VETTORIALI (Parallelizzate)
 // ==========================================
 
-// Nota: nessuna regione "parallel" propria -- va chiamata da dentro un
-// contesto parallelo esistente (qui, dal blocco "single" della regione
-// persistente). Il taskgroup interno e' pero' un punto di sincronizzazione
-// locale: la funzione ritorna solo quando tutti i task di riduzione sono
-// completati, quindi il chiamante NON deve fare un taskwait separato.
 static double dot_omp_tasks(const std::vector<double>& a,
                             const std::vector<double>& b,
                             std::size_t chunk_size) {
@@ -61,9 +58,6 @@ static double dot_omp_tasks(const std::vector<double>& a,
         for (std::size_t start = 0; start < n; start += chunk_size) {
             const std::size_t end = std::min(start + chunk_size, n);
 
-            // firstprivate(start, end): range congelato per questo task.
-            // shared(a, b): dati in sola lettura, nessuna scrittura concorrente.
-            // in_reduction(+:sum): partecipa alla riduzione del taskgroup esterno.
             #pragma omp task firstprivate(start, end) shared(a, b) \
                               in_reduction(+:sum) default(none)
             {
@@ -74,8 +68,7 @@ static double dot_omp_tasks(const std::vector<double>& a,
                 sum += partial;
             }
         }
-    } // fine taskgroup: "sum" contiene il totale, tutti i task sono finiti
-
+    } 
     return sum;
 }
 
@@ -84,8 +77,6 @@ static double l2_norm_omp_tasks(const std::vector<double>& x,
     return std::sqrt(dot_omp_tasks(x, x, chunk_size));
 }
 
-// Nota: nessuna riduzione qui -- ogni task scrive solo la propria fetta
-// di x, quindi un taskgroup "semplice" basta per aspettare la scrittura.
 static void normalize_omp_tasks(std::vector<double>& x,
                                 std::size_t chunk_size) {
     const double nrm = l2_norm_omp_tasks(x, chunk_size);
@@ -105,7 +96,7 @@ static void normalize_omp_tasks(std::vector<double>& x,
                 }
             }
         }
-    } // fine taskgroup: tutte le scritture su x sono completate
+    } 
 }
 
 // ==========================================
@@ -123,10 +114,6 @@ static std::size_t compute_shift_rows(std::size_t n) {
 // 4. KERNEL PARALLELIZZATO
 // ==========================================
 
-// Nota: come le funzioni vettoriali, non apre una propria regione
-// "parallel" -- viene chiamata da dentro il blocco "single" della regione
-// persistente. Crea solo i task; è compito del chiamante fare taskwait
-// dopo, dato che qui NON c'è un taskgroup che faccia da barriera locale.
 static void spmv_omp_tasks(const CSRMatrix& A,
                            std::size_t row_shift,
                            const std::vector<double>& x,
@@ -137,9 +124,6 @@ static void spmv_omp_tasks(const CSRMatrix& A,
     for (std::size_t start = 0; start < n; start += chunk_size) {
         const std::size_t end = std::min(start + chunk_size, n);
 
-        // firstprivate(start, end, row_shift, n): valori congelati per il task.
-        // shared(A, x, y): dati pesanti; ogni task scrive solo y[i] per i
-        // nel proprio range, quindi nessuna sovrapposizione in scrittura.
         #pragma omp task firstprivate(start, end, row_shift, n) \
                           shared(A, x, y) default(none)
         {
@@ -157,88 +141,92 @@ static void spmv_omp_tasks(const CSRMatrix& A,
 }
 
 // ==========================================
-// 5. FUNZIONE ITERATIVA E MAIN
+// 5. FUNZIONE ITERATIVA 
 // ==========================================
-struct IterativeResult {
-    double rayleigh             = 0.0;
-    std::uint64_t checksum      = 0;
-    std::size_t final_row_shift = 0;
-};
 
-static IterativeResult iterative_spmv_evolving(const CSRMatrix& A,
+static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
                                                std::uint64_t seed,
                                                std::size_t num_threads,
                                                std::size_t chunk_size,
                                                std::size_t norm_chunk_size,
                                                std::vector<double>* final_vector = nullptr) {
+    ExecutionTimers timers;
+    IterativeResult result;
+    
     const std::size_t n = A.n;
     const std::size_t shift_rows = compute_shift_rows(n);
 
     std::vector<double> x(n);
     std::vector<double> y(n);
 
-    // Fase 1: inizializzazione -- sequenziale, come nel riferimento.
+    const double t_start_total = omp_get_wtime();
+
     SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
     for (double& v : x) {
         v = rng.next_unit();
     }
 
     std::size_t row_shift = 0;
-    double rayleigh = 0.0;
-    std::uint64_t checksum = 0;
 
-    // Regione parallela persistente: aperta una sola volta per tutta la
-    // computazione (normalizzazione iniziale + 500 iterazioni + fase finale).
-    // Un solo thread ("single") fa da produttore di task; gli altri thread
-    // del team eseguono i task man mano che vengono creati.
     #pragma omp parallel num_threads(num_threads) default(none) \
         shared(A, x, y, n, shift_rows, chunk_size, norm_chunk_size, \
-               row_shift, rayleigh, checksum, final_vector)
+               row_shift, result, final_vector, timers)
     {
         #pragma omp single
         {
-            // Fase 1 (continua): normalizzazione iniziale di x.
-            // normalize_omp_tasks fa gia' da barriera internamente (taskgroup).
+            // Fase 1: Init e normalizzazione iniziale
+            const double t_init0 = omp_get_wtime();
             normalize_omp_tasks(x, norm_chunk_size);
+            timers.init_sec = omp_get_wtime() - t_init0;
 
             // Fase 2: iterazioni sulla matrice evolvente.
             for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
                 if (iter > 0 && (iter % EPOCH_LEN) == 0) {
+                    const double t_ep0 = omp_get_wtime();
                     row_shift = (row_shift + shift_rows) % n;
+                    timers.epoch_transition_sec += omp_get_wtime() - t_ep0;
                 }
 
-                // --- Fase SpMV: crea i task, poi aspetta che finiscano ---
+                // SpMV
+                const double t_spmv0 = omp_get_wtime();
                 spmv_omp_tasks(A, row_shift, x, y, chunk_size);
                 #pragma omp taskwait
-                // Barriera logica: da qui in poi e' garantito che tutti i
-                // task SpMV abbiano finito di scrivere y.
+                timers.spmv_sec += omp_get_wtime() - t_spmv0;
 
-                // --- Fase normalizzazione: barriera gia' inclusa (taskgroup) ---
+                // Normalizzazione
+                const double t_vec0 = omp_get_wtime();
                 normalize_omp_tasks(y, norm_chunk_size);
+                timers.vector_ops_sec += omp_get_wtime() - t_vec0;
 
-                // Sicuro: nessun task sta leggendo/scrivendo x o y adesso.
                 x.swap(y);
             }
 
             // Fase 3: diagnostica finale.
+            const double t_spmv_final = omp_get_wtime();
             spmv_omp_tasks(A, row_shift, x, y, chunk_size);
             #pragma omp taskwait
+            timers.spmv_sec += omp_get_wtime() - t_spmv_final;
 
-            rayleigh = dot_omp_tasks(x, y, norm_chunk_size);
-            checksum = checksum_vector(x);
+            const double t_vec_final = omp_get_wtime();
+            result.rayleigh = dot_omp_tasks(x, y, norm_chunk_size);
+            timers.vector_ops_sec += omp_get_wtime() - t_vec_final;
+            
+            result.checksum = checksum_vector(x);
+            result.final_row_shift = row_shift;
 
             if (final_vector != nullptr) {
                 *final_vector = std::move(x);
             }
-        } // fine single (barrier implicita in uscita)
-    } // fine parallel
+        } 
+    } 
 
-    return IterativeResult{
-        .rayleigh = rayleigh,
-        .checksum = checksum,
-        .final_row_shift = row_shift
-    };
+    timers.total_sec = omp_get_wtime() - t_start_total;
+    return OmpIterativeResult{result, timers};
 }
+
+// ==========================================
+// 6. MAIN
+// ==========================================
 
 int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
@@ -274,11 +262,9 @@ int main(int argc, char** argv) {
     std::cout << "SpMV Chunk Size: " << chunk_size << " | Norm Chunk Size: " << norm_chunk_size << "\n";
 
     try {
-        const auto tg0 = std::chrono::steady_clock::now();
+        const double tg0 = omp_get_wtime();
         const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
-        const auto tg1 = std::chrono::steady_clock::now();
-
-        const double generation_sec = std::chrono::duration<double>(tg1 - tg0).count();
+        const double generation_sec = omp_get_wtime() - tg0;
 
         print_matrix_stats(G);
         std::cout << "generation_time_sec=" << generation_sec << "\n\n";
@@ -286,19 +272,21 @@ int main(int argc, char** argv) {
         std::vector<double>  final_vector;
         std::vector<double>* final_vector_out = dump_vector_path.empty() ? nullptr : &final_vector;
 
-        const auto tc0 = std::chrono::steady_clock::now();
-        const IterativeResult result = iterative_spmv_evolving(
+        const OmpIterativeResult out = iterative_spmv_evolving(
             G.A, seed, num_threads, chunk_size, norm_chunk_size, final_vector_out);
-        const auto tc1 = std::chrono::steady_clock::now();
 
-        const double computation_sec = std::chrono::duration<double>(tc1 - tc0).count();
+        std::cout << "Breakdown tempi (secondi):\n";
+        std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
+        std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
+        std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
+        std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
 
         std::cout << std::setprecision(15);
-        std::cout << "rayleigh=" << result.rayleigh << "\n";
-        std::cout << "checksum=0x" << std::hex << result.checksum << std::dec << "\n";
+        std::cout << "rayleigh=" << out.result.rayleigh << "\n";
+        std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec << "\n";
 
         std::cout << std::fixed << std::setprecision(6);
-        std::cout << "Time (sec) = " << computation_sec << "\n";
+        std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
 
         if (!dump_vector_path.empty()) {
             dump_vector(dump_vector_path, final_vector);

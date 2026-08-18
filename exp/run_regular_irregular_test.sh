@@ -20,7 +20,16 @@ NORM_CHUNK=0
 # ==========================================
 # 2. Funzioni di estrazione dati
 # ==========================================
-extract_time()      { grep -oP 'Time \(sec\) = \K[0-9.]+' | head -1; }
+extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1; }
+extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1; }
+extract_dot_time()  { grep -oP 'Vector dot time \(sec\) = \K[0-9.]+' | head -1; }
+extract_scale_time(){ grep -oP 'Vector scale time \(sec\) = \K[0-9.]+' | head -1; }
+extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1; }
+extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1; }
+extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1; }
+extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1; }
+extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1; }
+extract_time()      { extract_comp_time; }
 extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+'; }
 extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+'; }
 
@@ -40,11 +49,11 @@ echo "[1/2] Test in modalità REGULAR..."
 
 # Sequenziale Regular
 SEQ_REG_OUT=$($SEQ_BIN -n "$N" -nz "$NZ" -m "regular" -s "$SEED")
-SEQ_REG_TIME=$(echo "$SEQ_REG_OUT" | extract_time)
+SEQ_REG_TIME=$(echo "$SEQ_REG_OUT" | extract_comp_time)
 
 # C++ Threads Regular
 THR_REG_OUT=$($CPPTHREADS_BIN -n "$N" -nz "$NZ" -m "regular" -t "$THREADS" -c "$CHUNK_SIZE" -nc "$NORM_CHUNK" -s "$SEED")
-THR_REG_TIME=$(echo "$THR_REG_OUT" | extract_time)
+THR_REG_TIME=$(echo "$THR_REG_OUT" | extract_comp_time)
 
 echo "  -> Sequenziale Regular:  ${SEQ_REG_TIME} s"
 echo "  -> C++ Threads Regular:  ${THR_REG_TIME} s"
@@ -57,11 +66,11 @@ echo "[2/2] Test in modalità IRREGULAR..."
 
 # Sequenziale Irregular
 SEQ_IRR_OUT=$($SEQ_BIN -n "$N" -nz "$NZ" -m "irregular" -s "$SEED")
-SEQ_IRR_TIME=$(echo "$SEQ_IRR_OUT" | extract_time)
+SEQ_IRR_TIME=$(echo "$SEQ_IRR_OUT" | extract_comp_time)
 
 # C++ Threads Irregular
 THR_IRR_OUT=$($CPPTHREADS_BIN -n "$N" -nz "$NZ" -m "irregular" -t "$THREADS" -c "$CHUNK_SIZE" -nc "$NORM_CHUNK" -s "$SEED")
-THR_IRR_TIME=$(echo "$THR_IRR_OUT" | extract_time)
+THR_IRR_TIME=$(echo "$THR_IRR_OUT" | extract_comp_time)
 
 echo "  -> Sequenziale Irregular: ${SEQ_IRR_TIME} s"
 echo "  -> C++ Threads Irregular: ${THR_IRR_TIME} s"

@@ -1,22 +1,5 @@
 // ==============================================================================
 // SPM "One-Shot" Project - C++ Threads Implementation
-//
-// Istruzioni di compilazione:
-//   g++ -O3 -std=c++20 -pthread -I . -Wall threadpool_SpMV.cpp -o threadpool_SpMV
-//
-// Istruzioni di esecuzione:
-//   -n   Dimensione della matrice, NxN
-//   -nz  Numero totale di elementi non nulli
-//   -m   Modalità della matrice: regular o irregular
-//   -t   Numero di thread da utilizzare (default: 4)
-//   -c   Dimensione del chunk per SpMV (default: 1000)
-//   -nc  Dimensione del chunk per operazioni vettoriali (0 = automatico, default: 0)
-//   -s   Seed opzionale (default: 111)
-//   --dump-vector FILE
-//        File di output opzionale per il vettore normalizzato finale
-//
-// Esempio per test scaling e granularità:
-//   ./threadpool_SpMV -n 500000 -nz 20000000 -m irregular -t 4 -c 1000 -nc 0
 // ==============================================================================
 
 #include "threadpool.hpp"
@@ -34,11 +17,42 @@
 #include <utility>
 #include <vector>
 
+// ==========================================
+// 1. COSTANTI E STRUTTURE
+// ==========================================
+static constexpr std::uint32_t NUM_ITERS = 500;
+static constexpr std::uint32_t EPOCH_LEN = 25;
 
-static constexpr std::uint32_t NUM_ITERS = 500; //[span_1](start_span)[span_1](end_span)
-static constexpr std::uint32_t EPOCH_LEN = 25;  //[span_2](start_span)[span_2](end_span)
+struct ExecutionTimers {
+    double init_sec              = 0.0;
+    double spmv_sec              = 0.0;
+    double vector_ops_sec        = 0.0;
+    double epoch_transition_sec  = 0.0;
+    double total_sec             = 0.0;
+};
 
+struct IterativeResult {
+    double rayleigh             = 0.0;
+    std::uint64_t checksum      = 0;
+    std::size_t final_row_shift = 0;
+};
 
+struct ThreadPoolIterativeResult {
+    IterativeResult result;
+    ExecutionTimers timers;
+};
+
+// ==========================================
+// 2. HELPER TIMER
+// ==========================================
+static double get_elapsed(const std::chrono::steady_clock::time_point& start) {
+    auto end = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(end - start).count();
+}
+
+// ==========================================
+// 3. OPERAZIONI VETTORIALI
+// ==========================================
 static double dot_parallel(const std::vector<double>& a, 
                            const std::vector<double>& b, 
                            ThreadPool& pool, 
@@ -46,7 +60,6 @@ static double dot_parallel(const std::vector<double>& a,
     const std::size_t n = a.size();
     std::vector<std::future<double>> futures;
     
-    // Ottimizzazione: pre-allocazione della memoria per evitare riallocazioni
     futures.reserve((n + chunk_size - 1) / chunk_size);
 
     for (std::size_t start = 0; start < n; start += chunk_size) {
@@ -83,7 +96,6 @@ static void normalize_parallel(std::vector<double>& x,
 
     std::vector<std::future<void>> futures;
     
-    // Ottimizzazione: pre-allocazione della memoria
     futures.reserve((n + chunk_size - 1) / chunk_size);
 
     for (std::size_t start = 0; start < n; start += chunk_size) {
@@ -101,16 +113,20 @@ static void normalize_parallel(std::vector<double>& x,
     }
 }
 
-
+// ==========================================
+// 4. SHIFT
+// ==========================================
 static std::size_t compute_shift_rows(std::size_t n) {
-    std::size_t s = n / 16 + 17; //[span_3](start_span)[span_3](end_span)
-    if ((s % 2) == 0) ++s;       //[span_4](start_span)[span_4](end_span)
-    s %= n;                      //[span_5](start_span)[span_5](end_span)
-    if (s == 0) s = 1;           //[span_6](start_span)[span_6](end_span)
-    return s;                    //[span_7](start_span)[span_7](end_span)
+    std::size_t s = n / 16 + 17;
+    if ((s % 2) == 0) ++s;
+    s %= n;
+    if (s == 0) s = 1;
+    return s;
 }
 
-
+// ==========================================
+// 5. KERNEL SPMV
+// ==========================================
 static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
                                            std::size_t row_shift,
                                            const std::vector<double>& x,
@@ -120,7 +136,6 @@ static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
     const std::size_t n = A.n;
     std::vector<std::future<void>> futures;
     
-    // Ottimizzazione: pre-allocazione della memoria
     futures.reserve((n + chunk_size - 1) / chunk_size);
 
     for (std::size_t start = 0; start < n; start += chunk_size) {
@@ -128,13 +143,13 @@ static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
 
         futures.push_back(pool.enqueue([&A, row_shift, &x, &y, start, end, n]() {
             for (std::size_t i = start; i < end; ++i) {
-                const std::size_t src_row = (i + n - row_shift) % n; //[span_8](start_span)[span_8](end_span)
+                const std::size_t src_row = (i + n - row_shift) % n;
 
                 double sum = 0.0;
-                for (std::uint64_t p = A.row_ptr[src_row]; p < A.row_ptr[src_row + 1]; ++p) { //[span_9](start_span)[span_9](end_span)
-                    sum += A.values[p] * x[A.col_idx[p]]; //[span_10](start_span)[span_10](end_span)
+                for (std::uint64_t p = A.row_ptr[src_row]; p < A.row_ptr[src_row + 1]; ++p) {
+                    sum += A.values[p] * x[A.col_idx[p]];
                 }
-                y[i] = sum; //[span_11](start_span)[span_11](end_span)
+                y[i] = sum;
             }
         }));
     }
@@ -144,64 +159,85 @@ static void spmv_csr_shifted_rows_parallel(const CSRMatrix& A,
     }
 }
 
-
-struct IterativeResult {
-    double rayleigh             = 0.0;
-    std::uint64_t checksum      = 0;
-    std::size_t final_row_shift = 0;
-};
-
-static IterativeResult iterative_spmv_evolving(const CSRMatrix& A,
+// ==========================================
+// 6. FUNZIONE ITERATIVA
+// ==========================================
+static ThreadPoolIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
                                                std::uint64_t seed,
                                                ThreadPool& pool,
                                                std::size_t chunk_size,
                                                std::size_t norm_chunk_size,
                                                std::vector<double>* final_vector = nullptr) {
+    ExecutionTimers timers;
+    IterativeResult result;
+    
     const std::size_t n = A.n;
-    const std::size_t shift_rows = compute_shift_rows(n); //[span_12](start_span)[span_12](end_span)
+    const std::size_t shift_rows = compute_shift_rows(n);
 
-    std::vector<double> x(n); //[span_13](start_span)[span_13](end_span)
-    std::vector<double> y(n); //[span_14](start_span)[span_14](end_span)
+    std::vector<double> x(n);
+    std::vector<double> y(n);
 
-    SplitMix64 rng(seed ^ 0x123456789abcdef0ULL); //[span_15](start_span)[span_15](end_span)
+    const auto t_start_total = std::chrono::steady_clock::now();
+
+    SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
     for (double& v : x) {
-        v = rng.next_unit(); //[span_16](start_span)[span_16](end_span)
+        v = rng.next_unit();
     }
     
+    // Fase 1: Inizializzazione
+    auto t0 = std::chrono::steady_clock::now();
     normalize_parallel(x, pool, norm_chunk_size); 
+    timers.init_sec = get_elapsed(t0);
 
-    std::size_t row_shift = 0; //[span_17](start_span)[span_17](end_span)
+    std::size_t row_shift = 0;
 
-    for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) { //[span_18](start_span)[span_18](end_span)
-        if (iter > 0 && (iter % EPOCH_LEN) == 0) { //[span_19](start_span)[span_19](end_span)
-            row_shift = (row_shift + shift_rows) % n; //[span_20](start_span)[span_20](end_span)
+    // Fase 2: Iterazioni
+    for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
+        if (iter > 0 && (iter % EPOCH_LEN) == 0) {
+            t0 = std::chrono::steady_clock::now();
+            row_shift = (row_shift + shift_rows) % n;
+            timers.epoch_transition_sec += get_elapsed(t0);
         }
 
+        t0 = std::chrono::steady_clock::now();
         spmv_csr_shifted_rows_parallel(A, row_shift, x, y, pool, chunk_size);
-        normalize_parallel(y, pool, norm_chunk_size);
+        timers.spmv_sec += get_elapsed(t0);
 
-        x.swap(y); //[span_21](start_span)[span_21](end_span)
+        t0 = std::chrono::steady_clock::now();
+        normalize_parallel(y, pool, norm_chunk_size);
+        timers.vector_ops_sec += get_elapsed(t0);
+
+        x.swap(y);
     }
 
+    // Fase 3: Diagnostica
+    t0 = std::chrono::steady_clock::now();
     spmv_csr_shifted_rows_parallel(A, row_shift, x, y, pool, chunk_size);
-    const double rayleigh = dot_parallel(x, y, pool, norm_chunk_size); 
-    const std::uint64_t checksum = checksum_vector(x); //[span_22](start_span)[span_22](end_span)
+    timers.spmv_sec += get_elapsed(t0);
+
+    t0 = std::chrono::steady_clock::now();
+    result.rayleigh = dot_parallel(x, y, pool, norm_chunk_size); 
+    timers.vector_ops_sec += get_elapsed(t0);
+
+    result.checksum = checksum_vector(x);
+    result.final_row_shift = row_shift;
 
     if (final_vector != nullptr) {
-        *final_vector = std::move(x); //[span_23](start_span)[span_23](end_span)
+        *final_vector = std::move(x);
     }
 
-    return IterativeResult{
-        .rayleigh = rayleigh,
-        .checksum = checksum,
-        .final_row_shift = row_shift
-    };
+    timers.total_sec = get_elapsed(t_start_total);
+    
+    return ThreadPoolIterativeResult{result, timers};
 }
 
+// ==========================================
+// 7. MAIN
+// ==========================================
 int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
     std::uint64_t nz   = 0;
-    std::uint64_t seed = 111; //[span_24](start_span)[span_24](end_span)
+    std::uint64_t seed = 111;
     std::uint64_t num_threads = 4;
     std::uint64_t chunk_size = 1000;
     std::uint64_t norm_chunk_arg = 0; 
@@ -210,18 +246,18 @@ int main(int argc, char** argv) {
 
     if (!read_arg_u64(argc, argv, "-n", n64) ||
         !read_arg_u64(argc, argv, "-nz", nz) ||
-        !read_arg_str(argc, argv, "-m", mode)) { //[span_25](start_span)[span_25](end_span)
+        !read_arg_str(argc, argv, "-m", mode)) {
         std::cerr << "Uso: " << argv[0] << " -n N -nz K -m regular|irregular [-t THREADS] [-c CHUNK_SIZE] [-nc NORM_CHUNK_SIZE] [-s SEED] [--dump-vector FILE]\n";
         return 1;
     }
 
-    (void)read_arg_u64(argc, argv, "-s", seed); //[span_26](start_span)[span_26](end_span)
+    (void)read_arg_u64(argc, argv, "-s", seed);
     (void)read_arg_u64(argc, argv, "-t", num_threads);
     (void)read_arg_u64(argc, argv, "-c", chunk_size);
     (void)read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
-    (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path); //[span_27](start_span)[span_27](end_span)
+    (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
-    const std::size_t n = static_cast<std::size_t>(n64); //[span_28](start_span)[span_28](end_span)
+    const std::size_t n = static_cast<std::size_t>(n64);
     
     const std::size_t norm_chunk_size = (norm_chunk_arg == 0) 
         ? ((n + num_threads - 1) / num_threads) 
@@ -232,41 +268,42 @@ int main(int argc, char** argv) {
     std::cout << "SpMV Chunk Size: " << chunk_size << " | Norm Chunk Size: " << norm_chunk_size << "\n";
 
     try {
-        const auto tg0 = std::chrono::steady_clock::now(); //[span_29](start_span)[span_29](end_span)
-        const GeneratedMatrix G = generate_matrix(n, nz, seed, mode); //[span_30](start_span)[span_30](end_span)
-        const auto tg1 = std::chrono::steady_clock::now(); //[span_31](start_span)[span_31](end_span)
+        auto tg0 = std::chrono::steady_clock::now();
+        const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
+        const double generation_sec = get_elapsed(tg0);
 
-        const double generation_sec = std::chrono::duration<double>(tg1 - tg0).count(); //[span_32](start_span)[span_32](end_span)
+        print_matrix_stats(G);
+        std::cout << "generation_time_sec=" << generation_sec << "\n\n";
 
-        print_matrix_stats(G); //[span_33](start_span)[span_33](end_span)
-        std::cout << "generation_time_sec=" << generation_sec << "\n\n"; //[span_34](start_span)[span_34](end_span)
-
-        std::vector<double>  final_vector; //[span_35](start_span)[span_35](end_span)
-        std::vector<double>* final_vector_out = dump_vector_path.empty() ? nullptr : &final_vector; //[span_36](start_span)[span_36](end_span)
+        std::vector<double>  final_vector;
+        std::vector<double>* final_vector_out = dump_vector_path.empty() ? nullptr : &final_vector;
 
         ThreadPool pool(num_threads);
 
-        const auto tc0 = std::chrono::steady_clock::now(); //[span_37](start_span)[span_37](end_span)
-        const IterativeResult result = iterative_spmv_evolving(G.A, seed, pool, chunk_size, norm_chunk_size, final_vector_out);
-        const auto tc1 = std::chrono::steady_clock::now(); //[span_38](start_span)[span_38](end_span)
+        const ThreadPoolIterativeResult out = iterative_spmv_evolving(
+            G.A, seed, pool, chunk_size, norm_chunk_size, final_vector_out);
 
-        const double computation_sec = std::chrono::duration<double>(tc1 - tc0).count(); //[span_39](start_span)[span_39](end_span)
+        std::cout << "Breakdown tempi (secondi):\n";
+        std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
+        std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
+        std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
+        std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
 
-        std::cout << std::setprecision(15); //[span_40](start_span)[span_40](end_span)
-        std::cout << "rayleigh=" << result.rayleigh << "\n"; //[span_41](start_span)[span_41](end_span)
-        std::cout << "checksum=0x" << std::hex << result.checksum << std::dec << "\n"; //[span_42](start_span)[span_42](end_span)
+        std::cout << std::setprecision(15);
+        std::cout << "rayleigh=" << out.result.rayleigh << "\n";
+        std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec << "\n";
 
-        std::cout << std::fixed << std::setprecision(6); //[span_43](start_span)[span_43](end_span)
-        std::cout << "Time (sec) = " << computation_sec << "\n"; //[span_44](start_span)[span_44](end_span)
+        std::cout << std::fixed << std::setprecision(6);
+        std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
 
-        if (!dump_vector_path.empty()) { //[span_45](start_span)[span_45](end_span)
-            dump_vector(dump_vector_path, final_vector); //[span_46](start_span)[span_46](end_span)
-            std::cout << "vector_dump=" << dump_vector_path << "\n"; //[span_47](start_span)[span_47](end_span)
+        if (!dump_vector_path.empty()) {
+            dump_vector(dump_vector_path, final_vector);
+            std::cout << "vector_dump=" << dump_vector_path << "\n";
         }
-    } catch (const std::exception& e) { //[span_48](start_span)[span_48](end_span)
-        std::cerr << "Error: " << e.what() << "\n"; //[span_49](start_span)[span_49](end_span)
-        return 1; //[span_50](start_span)[span_50](end_span)
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
     }
 
-    return 0; //[span_51](start_span)[span_51](end_span)
+    return 0;
 }

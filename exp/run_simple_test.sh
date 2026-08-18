@@ -11,8 +11,8 @@ set -euo pipefail
 SEQ_BIN="../iterative_SpMV"
 
 # Parametri del problema (Problema "Largo" del report)
-N=1000000
-NZ=200000000
+N=1000
+NZ=2000
 MODE="irregular"
 SEED=111
 
@@ -60,23 +60,70 @@ MPI_IMPLS=(
 # ==========================================
 # 3. Funzioni di estrazione ed esecuzione
 # ==========================================
-extract_time()     { grep -oP 'Time \(sec\) = \K[0-9.]+' | head -1; }
-extract_checksum() { grep -oP 'checksum=\K0x[0-9a-fA-F]+'; }
-extract_rayleigh() { grep -oP 'rayleigh=\K[-0-9.eE+]+'; }
+extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1; }
+extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1; }
+extract_dot_time()  { grep -oP 'Vector dot time \(sec\) = \K[0-9.]+' | head -1; }
+extract_scale_time(){ grep -oP 'Vector scale time \(sec\) = \K[0-9.]+' | head -1; }
+extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1; }
+extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1; }
+extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1; }
+extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1; }
+extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1; }
+extract_time()      { extract_comp_time; }
+extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+'; }
+extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+'; }
+
+print_optional_metric() {
+    local label="$1" value="$2"
+    if [ -n "$value" ]; then
+        echo "  -> ${label}: ${value} s"
+    fi
+}
 
 run_and_extract() {
     local label="$1"; shift
     local out
     out=$("$@")
 
-    declare -g "${label}_TIME=$(echo "$out" | extract_time)"
+    local comp_time spmv_time dot_time scale_time scatt_time comm_time red_time epoch_time imbalance
+    comp_time=$(echo "$out" | extract_comp_time)
+    if [ -z "$comp_time" ]; then
+        comp_time=$(echo "$out" | extract_time)
+    fi
+    spmv_time=$(echo "$out" | extract_spmv_time)
+    dot_time=$(echo "$out" | extract_dot_time)
+    scale_time=$(echo "$out" | extract_scale_time)
+    scatt_time=$(echo "$out" | extract_scatt_time)
+    comm_time=$(echo "$out" | extract_comm_time)
+    red_time=$(echo "$out" | extract_red_time)
+    epoch_time=$(echo "$out" | extract_epoch_time)
+    imbalance=$(echo "$out" | extract_imbalance)
+
+    declare -g "${label}_TIME=${comp_time}"
+    declare -g "${label}_COMP=${comp_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
+    declare -g "${label}_SPMV=${spmv_time}"
+    declare -g "${label}_DOT=${dot_time}"
+    declare -g "${label}_SCALE=${scale_time}"
+    declare -g "${label}_SCATT=${scatt_time}"
+    declare -g "${label}_COMM=${comm_time}"
+    declare -g "${label}_RED=${red_time}"
+    declare -g "${label}_EPOCH=${epoch_time}"
+    declare -g "${label}_IMBAL=${imbalance}"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
-    echo "  -> Tempo:     ${!t_var} s"
+    echo "  -> Computation: ${!t_var} s"
     echo "  -> Checksum:  ${!c_var}"
     echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "SpMV" "$spmv_time"
+    print_optional_metric "Vector dot" "$dot_time"
+    print_optional_metric "Vector scale" "$scale_time"
+    print_optional_metric "Scatter" "$scatt_time"
+    print_optional_metric "Communication" "$comm_time"
+    print_optional_metric "Reduction" "$red_time"
+    print_optional_metric "Epoch transition" "$epoch_time"
+    print_optional_metric "Imbalance" "$imbalance"
 }
 
 run_and_extract_mpi() {
@@ -86,14 +133,45 @@ run_and_extract_mpi() {
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
 
-    declare -g "${label}_TIME=$(echo "$out" | extract_time)"
+    local comp_time spmv_time dot_time scale_time scatt_time comm_time red_time epoch_time imbalance
+    comp_time=$(echo "$out" | extract_comp_time)
+    if [ -z "$comp_time" ]; then
+        comp_time=$(echo "$out" | extract_time)
+    fi
+    spmv_time=$(echo "$out" | extract_spmv_time)
+    dot_time=$(echo "$out" | extract_dot_time)
+    scale_time=$(echo "$out" | extract_scale_time)
+    scatt_time=$(echo "$out" | extract_scatt_time)
+    comm_time=$(echo "$out" | extract_comm_time)
+    red_time=$(echo "$out" | extract_red_time)
+    epoch_time=$(echo "$out" | extract_epoch_time)
+    imbalance=$(echo "$out" | extract_imbalance)
+
+    declare -g "${label}_TIME=${comp_time}"
+    declare -g "${label}_COMP=${comp_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
+    declare -g "${label}_SPMV=${spmv_time}"
+    declare -g "${label}_DOT=${dot_time}"
+    declare -g "${label}_SCALE=${scale_time}"
+    declare -g "${label}_SCATT=${scatt_time}"
+    declare -g "${label}_COMM=${comm_time}"
+    declare -g "${label}_RED=${red_time}"
+    declare -g "${label}_EPOCH=${epoch_time}"
+    declare -g "${label}_IMBAL=${imbalance}"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
-    echo "  -> Tempo:     ${!t_var} s"
+    echo "  -> Computation: ${!t_var} s"
     echo "  -> Checksum:  ${!c_var}"
     echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "SpMV" "$spmv_time"
+    print_optional_metric "Vector dot" "$dot_time"
+    print_optional_metric "Vector scale" "$scale_time"
+    print_optional_metric "Scatter" "$scatt_time"
+    print_optional_metric "Communication" "$comm_time"
+    print_optional_metric "Reduction" "$red_time"
+    print_optional_metric "Epoch transition" "$epoch_time"
+    print_optional_metric "Imbalance" "$imbalance"
 }
 
 compare_to_seq() {
@@ -106,9 +184,9 @@ compare_to_seq() {
     echo "--- $label vs SEQ ---"
 
     if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
-        echo "  [INFO] Checksum: Bitwise identici (${!seq_chk_var})"
+        echo "  [INFO] Checksum Uguali (${!seq_chk_var})"
     else
-        echo "  [INFO] Checksum: Differenti (normale in parallelo)"
+        echo "  [INFO] Checksum Differenti"
     fi
 
     local diff_val check_result
@@ -140,7 +218,7 @@ echo "=========================================================="
 # ==========================================
 # 5. Esecuzione Sequenziale
 # ==========================================
-echo "Esecuzione Sequenziale (Attenzione: impiegherà ~7 minuti)..."
+echo "Esecuzione Sequenziale"
 run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED"
 echo "----------------------------------------------------------"
 

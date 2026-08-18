@@ -64,7 +64,36 @@ static constexpr std::uint32_t NUM_ITERS = 500;
 // number of iterations between two matrix-evolution steps
 static constexpr std::uint32_t EPOCH_LEN = 25;
 
-// Vector operations
+// ==========================================
+// 1. STRUTTURE PER TELEMETRIA
+// ==========================================
+struct ExecutionTimers {
+    double init_sec              = 0.0;
+    double spmv_sec              = 0.0;
+    double vector_ops_sec        = 0.0;
+    double epoch_transition_sec  = 0.0;
+    double total_sec             = 0.0;
+};
+
+struct IterativeResult {
+  double rayleigh = 0.0;
+  std::uint64_t checksum = 0;
+  std::size_t final_row_shift = 0;
+};
+
+struct SeqIterativeResult {
+    IterativeResult result;
+    ExecutionTimers timers;
+};
+
+static double get_elapsed(const std::chrono::steady_clock::time_point& start) {
+    auto end = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(end - start).count();
+}
+
+// ==========================================
+// 2. OPERAZIONI VETTORIALI
+// ==========================================
 
 static double dot(const std::vector<double> &a, const std::vector<double> &b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
@@ -95,11 +124,6 @@ static std::size_t compute_shift_rows(std::size_t n) {
 }
 
 // Per-row SpMV kernel.
-//
-// row_shift = s means that the matrix rows have been circularly shifted by s
-// positions
-//
-// Logical row i uses source row (i - s mod n) from the original CSR matrix.
 static void spmv_csr_shifted_rows(const CSRMatrix &A, std::size_t row_shift,
                                   const std::vector<double> &x,
                                   std::vector<double> &y) {
@@ -119,66 +143,74 @@ static void spmv_csr_shifted_rows(const CSRMatrix &A, std::size_t row_shift,
   }
 }
 
-struct IterativeResult {
-  double rayleigh = 0.0;
-  std::uint64_t checksum = 0;
-  std::size_t final_row_shift = 0;
-};
+// ==========================================
+// 3. FUNZIONE ITERATIVA
+// ==========================================
 
-static IterativeResult
+static SeqIterativeResult
 iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
                         std::vector<double> *final_vector = nullptr) {
+  ExecutionTimers timers;
+  IterativeResult result;
+
   const std::size_t n = A.n;
   const std::size_t shift_rows = compute_shift_rows(n);
 
-  // Phase 1: initialize the vector used by the iterative method.
-  // Parallel versions must preserve this initialization, or distribute the
-  // same initial vector, before entering the timed iterative loop.
   std::vector<double> x(n);
   std::vector<double> y(n);
+
+  const auto t_start_total = std::chrono::steady_clock::now();
 
   SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
   for (double &v : x) {
     v = rng.next_unit();
   }
+  
+  auto t0 = std::chrono::steady_clock::now();
   normalize(x);
+  timers.init_sec = get_elapsed(t0);
 
-  // Phase 2: iterative computation on the evolving matrix.
-  // The sequential reference keeps the CSR matrix fixed and represents matrix
-  // evolution through this logical row_shift value.
   std::size_t row_shift = 0;
 
   for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
-    // At each epoch boundary, update the logical row mapping.
     if (iter > 0 && (iter % EPOCH_LEN) == 0) {
+      t0 = std::chrono::steady_clock::now();
       row_shift = (row_shift + shift_rows) % n;
+      timers.epoch_transition_sec += get_elapsed(t0);
     }
 
-    // One iteration: shifted SpMV followed by vector normalization.
-    // The normalization contains a global reduction.
+    t0 = std::chrono::steady_clock::now();
     spmv_csr_shifted_rows(A, row_shift, x, y);
+    timers.spmv_sec += get_elapsed(t0);
+
+    t0 = std::chrono::steady_clock::now();
     normalize(y);
+    timers.vector_ops_sec += get_elapsed(t0);
 
     x.swap(y);
   }
 
-  // Phase 3: final diagnostics for correctness checks.
-  // The extra SpMV is used to compute the final Rayleigh-like value.
+  t0 = std::chrono::steady_clock::now();
   spmv_csr_shifted_rows(A, row_shift, x, y);
-  const double rayleigh = dot(x, y);
-  const std::uint64_t checksum = checksum_vector(x);
+  timers.spmv_sec += get_elapsed(t0);
+  
+  t0 = std::chrono::steady_clock::now();
+  result.rayleigh = dot(x, y);
+  timers.vector_ops_sec += get_elapsed(t0);
+  
+  result.checksum = checksum_vector(x);
+  result.final_row_shift = row_shift;
 
-  // Keep the final vector only if we have to dump it.
   if (final_vector != nullptr) {
     *final_vector = std::move(x);
   }
 
-  return IterativeResult{
-      .rayleigh = rayleigh, .checksum = checksum, .final_row_shift = row_shift};
+  timers.total_sec = get_elapsed(t_start_total);
+
+  return SeqIterativeResult{result, timers};
 }
 
 int main(int argc, char **argv) {
-  // Phase 0: read problem size, sparsity mode, seed, and optional dump path.
   std::uint64_t n64 = 0;
   std::uint64_t nz = 0;
   std::uint64_t seed = 111;
@@ -192,7 +224,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Optional arguments
   (void)read_arg_u64(argc, argv, "-s", seed);
   (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
@@ -200,7 +231,6 @@ int main(int argc, char **argv) {
   std::cout << "SPARSE_ITERATION_SEQ\n";
 
   try {
-    // Phase 1: input construction.
     const auto tg0 = std::chrono::steady_clock::now();
     const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
     const auto tg1 = std::chrono::steady_clock::now();
@@ -215,25 +245,24 @@ int main(int argc, char **argv) {
     std::vector<double> *final_vector_out =
         dump_vector_path.empty() ? nullptr : &final_vector;
 
-    // Phase 2: timed iterative computation.
-    const auto tc0 = std::chrono::steady_clock::now();
-    const IterativeResult result =
+    const SeqIterativeResult out =
         iterative_spmv_evolving(G.A, seed, final_vector_out);
-    const auto tc1 = std::chrono::steady_clock::now();
 
-    const double computation_sec =
-        std::chrono::duration<double>(tc1 - tc0).count();
+    std::cout << "Breakdown tempi (secondi):\n";
+    std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
+    std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
+    std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
+    std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
 
     std::cout << std::setprecision(15);
-    std::cout << "rayleigh=" << result.rayleigh << "\n";
-    std::cout << "checksum=0x" << std::hex << result.checksum << std::dec
+    std::cout << "Computation time (sec) = " << out.timers.total_sec << "\n";
+    std::cout << "rayleigh=" << out.result.rayleigh << "\n";
+    std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec
               << "\n";
 
     std::cout << std::fixed << std::setprecision(6);
-    std::cout << "Time (sec) = " << computation_sec << "\n";
+    std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
 
-    // Phase 3: optional correctness support. Vector dumping is outside the
-    // timed region
     if (!dump_vector_path.empty()) {
       dump_vector(dump_vector_path, final_vector);
       std::cout << "vector_dump=" << dump_vector_path << "\n";
