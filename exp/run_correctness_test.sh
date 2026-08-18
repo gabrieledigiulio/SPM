@@ -2,52 +2,52 @@
 set -euo pipefail
 
 # ==============================================================================
-# SPM "One-Shot" Project - Script di verifica correttezza e tempi (Ottimizzato)
+# SPM "One-Shot" Project - Correctness & Timing Verification Script (Optimized)
 # ==============================================================================
 
 # ==========================================
-# 1. Configurazione Parametri del Test
+# 1. Test Parameter Configuration
 # ==========================================
 SEQ_BIN="../iterative_SpMV"
 
-# Parametri del problema (Taglia "piccola" per testing veloce)
+# Problem Parameters (Small size for fast testing)
 N=1000000
 NZ=20000000
 MODE="irregular"
 SEED=111
 
-# --- Parametri Ottimali per C++ Threads ---
+# --- Optimal Parameters for C++ Threads ---
 CPP_THREADS=32
 CPP_CHUNK=2048
 CPP_NORM_CHUNK=2048
 
-# --- Parametri Ottimali per OpenMP Tasks ---
+# --- Optimal Parameters for OpenMP Tasks ---
 OMP_THREADS=32
 OMP_CHUNK=4096
 OMP_NORM_CHUNK=4096
 
-# --- Parametri Ottimali per MPI + OpenMP ---
-MPI_NODES=8              # Numero di macchine fisiche
-MPI_RANKS=8              # 1 processo MPI per nodo
-OMP_THREADS_PER_RANK=16  # Thread per rank
+# --- Optimal Parameters for MPI + OpenMP ---
+MPI_NODES=8              # Number of physical machines
+MPI_RANKS=8              # 1 MPI process per node
+OMP_THREADS_PER_RANK=16  # Threads per rank
 MPI_CHUNK=1024
 MPI_NORM_CHUNK=1024
 
-# Calcolo automatico della mappatura per OpenMPI
+# Automatic mapping computation for OpenMPI
 RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
 MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 
-# Tolleranza numerica
+# Numerical tolerance
 TOLERANCE="1e-12"
 
-# Controllo del dump dei vettori
+# Vector dump control
 ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
 
 # ==========================================
-# 2. Implementazioni da testare
+# 2. Implementations to Test
 # ==========================================
-# Formato: "LABEL|BINARIO|FILE_DUMP|THREADS|CHUNK_SIZE|NORM_CHUNK"
+# Format: "LABEL|BINARY|DUMP_FILE|THREADS|CHUNK_SIZE|NORM_CHUNK"
 IMPLS=(
     "CPP_THREADS|../threadpool_SpMV|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
     "OMP_TASKS|../omp_tasks_SpMV|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
@@ -58,7 +58,7 @@ MPI_IMPLS=(
 )
 
 # ==========================================
-# 3. Funzioni di estrazione ed esecuzione
+# 3. Extraction & Execution Functions
 # ==========================================
 extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
@@ -177,9 +177,9 @@ compare_to_seq() {
     echo "--- $label vs SEQ ---"
 
     if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
-        echo "  [INFO] Checksum Uguali (${!seq_chk_var})"
+        echo "  [INFO] Checksums Match (${!seq_chk_var})"
     else
-        echo "  [INFO] Checksum Differenti"
+        echo "  [INFO] Checksums Differ"
     fi
 
     local diff_val check_result
@@ -189,59 +189,59 @@ compare_to_seq() {
         'BEGIN { d = s - p; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
 
     if [ "$check_result" == "PASS" ]; then
-        echo "  [OK] Rayleigh value: VALIDATO (Diff: $diff_val <= $TOLERANCE)"
+        echo "  [OK] Rayleigh value: VALIDATED (Diff: $diff_val <= $TOLERANCE)"
     else
-        echo "  [ERRORE] Rayleigh value: FUORI TOLLERANZA! (Diff: $diff_val > $TOLERANCE)"
+        echo "  [ERROR] Rayleigh value: OUT OF TOLERANCE! (Diff: $diff_val > $TOLERANCE)"
     fi
     echo ""
 }
 
 # ==========================================
-# 4. Riepilogo configurazione
+# 4. Configuration Summary
 # ==========================================
 echo "=========================================================="
-echo " CONFIGURAZIONE TEST (PARAMETRI OTTIMALI REPORT)"
+echo " TEST CONFIGURATION (OPTIMAL REPORT PARAMETERS)"
 echo "=========================================================="
-echo "  Matrice (N x N):        $N"
-echo "  Elementi non-nulli (NZ): $NZ"
-echo "  Modalità matrice:       $MODE"
+echo "  Matrix (N x N):         $N"
+echo "  Non-zero elements (NZ): $NZ"
+echo "  Matrix mode:            $MODE"
 echo "  MPI nodes:              $MPI_NODES"
 echo "=========================================================="
 
 # ==========================================
-# 5. Esecuzione Sequenziale
+# 5. Sequential Execution
 # ==========================================
-echo "Esecuzione Sequenziale"
+echo "Sequential Execution"
 run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED"
 echo "----------------------------------------------------------"
 
 # ==========================================
-# 6. Esecuzione versioni a singolo nodo
+# 6. Single-node Implementations Execution
 # ==========================================
 for entry in "${IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    echo "Esecuzione $label (-t $th, -c $chk)..."
+    echo "Running $label (-t $th, -c $chk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED"
     echo "----------------------------------------------------------"
 done
 
 # ==========================================
-# 7. Esecuzione versioni MPI+OpenMP
+# 7. MPI+OpenMP Implementations Execution
 # ==========================================
 for entry in "${MPI_IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    echo "Esecuzione $label (Nodes: $MPI_NODES, MPI_Ranks: $MPI_RANKS, OMP_Threads: $OMP_THREADS_PER_RANK, -c $chk)..."
+    echo "Running $label (Nodes: $MPI_NODES, MPI_Ranks: $MPI_RANKS, OMP_Threads: $OMP_THREADS_PER_RANK, -c $chk)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -c "$chk" -nc "$nchk" -s "$SEED"
     echo "----------------------------------------------------------"
 done
 
 # ==========================================
-# 8. Verifica di Correttezza e Tempi
+# 8. Correctness & Timing Verification
 # ==========================================
 echo "=========================================================="
-echo " RISULTATI CORRETTEZZA (Tolleranza: $TOLERANCE)"
+echo " CORRECTNESS RESULTS (Tolerance: $TOLERANCE)"
 echo "=========================================================="
 
 for entry in "${IMPLS[@]}"; do
@@ -254,7 +254,7 @@ for entry in "${MPI_IMPLS[@]}"; do
 done
 
 echo "=========================================================="
-echo " RIEPILOGO TEMPI COMPLESSIVI"
+echo " OVERALL TIMING SUMMARY"
 echo "=========================================================="
 printf "  %-15s %10s s\n" "SEQ" "${SEQ_TIME:-N/A}"
 for entry in "${IMPLS[@]}"; do

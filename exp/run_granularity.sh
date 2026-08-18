@@ -2,155 +2,273 @@
 set -euo pipefail
 
 # ==============================================================================
-# SPM Project - Benchmark Granularità Modulare (threads, omp, mpi)
+# SPM "One-Shot" Project - Cross-Validation & Timing Script
 # ==============================================================================
 
-MODE_TYPE="${1:-}"
+# ==========================================
+# 1. Test Parameter Configuration
+# ==========================================
+SEQ_BIN="../iterative_SpMV"
 
-if [[ -z "$MODE_TYPE" ]]; then
-    echo "Errore: Devi specificare una modalità!"
-    echo "Uso: ./run_granularity.sh [threads|omp|mpi]"
-    exit 1
-fi
-
-# Parametri del problema
-N=1000000
-NZ=250000000
+# Problem Parameters (Small size for fast testing & dumping)
+N=1000
+NZ=25000
 MODE="irregular"
 SEED=111
 
-# Parametri di esecuzione
-THREADS=16
-REPEATS=3
-BLOCK_SIZES=(256 512 1024 2048 4096 8192 16384)
+# --- Optimal Parameters for C++ Threads ---
+CPP_THREADS=32
+CPP_CHUNK=2048
+CPP_NORM_CHUNK=2048
 
-# Parametri MPI (attivi solo se MODE_TYPE == mpi)
-MPI_NODES=8
-MPI_RANKS=8
-RANKS_PER_NODE=$(( MPI_NODES > 0 ? MPI_RANKS / MPI_NODES : 1 ))
+# --- Optimal Parameters for OpenMP Tasks ---
+OMP_THREADS=32
+OMP_CHUNK=4096
+OMP_NORM_CHUNK=4096
+
+# --- Optimal Parameters for MPI + OpenMP ---
+MPI_NODES=8              # Number of physical machines
+MPI_RANKS=8              # 1 MPI process per node
+OMP_THREADS_PER_RANK=16  # Threads per rank
+MPI_CHUNK=1024
+MPI_NORM_CHUNK=1024
+
+# Automatic mapping computation for OpenMPI
+RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
 MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 
-RESULTS_DIR="results"
-mkdir -p "$RESULTS_DIR"
+# Numerical tolerance per Rayleigh
+TOLERANCE="1e-12"
 
-# CSV specifico in base alla modalità scelta
-CSV_FILE="$RESULTS_DIR/results_granularity_${MODE_TYPE}.csv"
+# Vector dump control (Impostare a 'true' per matrici piccole)
+ENABLE_DUMP=true
+SEQ_DUMP_FILE="seq_vec.dump"
 
-# ==============================================================================
-# RECAP CONFIGURAZIONE SCELTA
-# ==============================================================================
-echo "=========================================================="
-echo " SPM PROJECT - CONFIGURAZIONE BENCHMARK GRANULARITÀ"
-echo "=========================================================="
-echo " Modalità testata      : $MODE_TYPE"
-echo " Matrice (N x NZ)      : $N righe, $NZ non-zeri"
-echo " Tipo di matrice       : $MODE (Seed: $SEED)"
-echo " Thread per processo   : $THREADS"
-echo " Ripetizioni (Mediana) : $REPEATS"
-echo " Chunk Sizes SpMV (-c) : ${BLOCK_SIZES[*]}"
-echo " Chunk Sizes Norm (-nc): ${BLOCK_SIZES[*]}"
-if [ "$MODE_TYPE" == "mpi" ]; then
-echo " --- Parametri MPI ---"
-echo " Nodi MPI              : $MPI_NODES"
-echo " Rank MPI totali       : $MPI_RANKS"
-echo " Rank per nodo         : $RANKS_PER_NODE"
-fi
-echo " File di output        : $CSV_FILE"
-echo "=========================================================="
-echo ""
+# ==========================================
+# 2. Implementations to Test
+# ==========================================
+# Format: "LABEL|BINARY|DUMP_FILE|THREADS|CHUNK_SIZE|NORM_CHUNK"
+IMPLS=(
+    "CPP_THREADS|../threadpool_SpMV|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
+    "OMP_TASKS|../omp_tasks_SpMV|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
+)
 
-# Se il file non esiste, creiamo l'intestazione allargata a tutti i componenti
-if [ ! -f "$CSV_FILE" ]; then
-    echo "Implementation,ChunkSize,Threads,MedianTotalTime,MedianSpMVTime,MedianVectorOpsTime,MedianEpochTime,MedianInitTime" > "$CSV_FILE"
-fi
+MPI_IMPLS=(
+    "MPI_OMP|../mpi_omp_SpMV|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
+)
 
-# Funzioni di estrazione compatibili con macOS (BSD grep/sed) e Linux per ogni timer del codice
-extract_comp_time()   { grep -oE 'Time \(sec\) = [0-9.]+' | head -1 | awk '{print $NF}' || true; }
-extract_spmv_time()   { grep -oE 'SpMV time \(sec\) = [0-9.]+' | head -1 | awk '{print $NF}' || true; }
-extract_vecops_time() { grep -oE 'Vector ops time \(sec\) = [0-9.]+' | head -1 | awk '{print $NF}' || true; }
-extract_epoch_time()  { grep -oE 'Epoch transition \(sec\) = [0-9.]+' | head -1 | awk '{print $NF}' || true; }
-extract_init_time()   { grep -oE 'Init time \(sec\) = [0-9.]+' | head -1 | awk '{print $NF}' || true; }
+# Array per tracciare tutte le run eseguite per il cross-check finale
+ALL_LABELS=("SEQ")
+ALL_DUMPS=("$SEQ_DUMP_FILE")
 
-calculate_median() {
-    local arr=("$@")
-    printf '%s\n' "${arr[@]}" | sort -n | awk '
-        { a[NR] = $1 }
-        END {
-            if (NR == 0) print 0;
-            else if (NR % 2 == 1) print a[(NR + 1) / 2];
-            else print (a[NR / 2] + a[NR / 2 + 1]) / 2;
-        }
-    '
+# ==========================================
+# 3. Extraction & Execution Functions
+# ==========================================
+extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1 || true; }
+extract_time()      { extract_comp_time; }
+extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+' || true; }
+extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+' || true; }
+
+print_optional_metric() {
+    local label="$1" value="$2"
+    if [ -n "$value" ]; then
+        echo "  -> ${label}: ${value} s"
+    fi
 }
 
-case "$MODE_TYPE" in
-    threads)
-        IMPL_LABEL="CPP_THREADS"
-        BIN_PATH="../threadpool_SpMV"
-        ;;
-    omp)
-        IMPL_LABEL="OMP_TASKS"
-        BIN_PATH="../omp_tasks_SpMV"
-        ;;
-    mpi)
-        IMPL_LABEL="MPI_OMP"
-        BIN_PATH="../mpi_omp_SpMV"
-        ;;
-    *)
-        echo "Errore: Opzione non valida '$MODE_TYPE'. Usa: threads, omp, oppure mpi."
-        exit 1
-        ;;
-esac
+run_and_extract() {
+    local label="$1"; shift
+    local out
+    out=$("$@")
 
-echo "----------------------------------------------------------"
-echo " Avvio esecuzione: $IMPL_LABEL"
-echo "----------------------------------------------------------"
+    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
+    comp_time=$(echo "$out" | extract_comp_time)
+    if [ -z "$comp_time" ]; then
+        comp_time=$(echo "$out" | extract_time)
+    fi
+    vecops_time=$(echo "$out" | extract_vecops_time)
+    spmv_time=$(echo "$out" | extract_spmv_time)
+    scatt_time=$(echo "$out" | extract_scatt_time)
+    comm_time=$(echo "$out" | extract_comm_time)
+    red_time=$(echo "$out" | extract_red_time)
+    epoch_time=$(echo "$out" | extract_epoch_time)
+    imbalance=$(echo "$out" | extract_imbalance)
 
-for chunk in "${BLOCK_SIZES[@]}"; do
-    echo ">> Testando con Chunk SpMV/Norm = $chunk ..."
-    tot_times=()
-    spmv_times=()
-    vec_times=()
-    epoch_times=()
-    init_times=()
+    declare -g "${label}_TIME=${comp_time}"
+    declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
+    declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
+
+    local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
+    echo "  -> Computation: ${!t_var} s"
+    echo "  -> Checksum:  ${!c_var}"
+    echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "Vector ops" "$vecops_time"
+    print_optional_metric "SpMV" "$spmv_time"
+    print_optional_metric "Epoch transition" "$epoch_time"
+}
+
+run_and_extract_mpi() {
+    local label="$1" binary="$2"; shift 2
+    local out
+
+    out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
+          mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
+
+    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
+    comp_time=$(echo "$out" | extract_comp_time)
+    if [ -z "$comp_time" ]; then
+        comp_time=$(echo "$out" | extract_time)
+    fi
+    vecops_time=$(echo "$out" | extract_vecops_time)
+    spmv_time=$(echo "$out" | extract_spmv_time)
+    scatt_time=$(echo "$out" | extract_scatt_time)
+    comm_time=$(echo "$out" | extract_comm_time)
+    red_time=$(echo "$out" | extract_red_time)
+    epoch_time=$(echo "$out" | extract_epoch_time)
+    imbalance=$(echo "$out" | extract_imbalance)
+
+    declare -g "${label}_TIME=${comp_time}"
+    declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
+    declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
+
+    local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
+    echo "  -> Computation: ${!t_var} s"
+    echo "  -> Checksum:  ${!c_var}"
+    echo "  -> Rayleigh:  ${!r_var}"
+    print_optional_metric "SpMV" "$spmv_time"
+    print_optional_metric "Communication" "$comm_time"
+    print_optional_metric "Imbalance" "$imbalance"
+}
+
+compare_pairs() {
+    local l1="$1" d1="$2" l2="$3" d2="$4"
     
-    for r in $(seq 1 "$REPEATS"); do
-        if [ "$MODE_TYPE" == "mpi" ]; then
-            out=$(OMP_NUM_THREADS="$THREADS" \
-                  mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$BIN_PATH" \
-                  -n "$N" -nz "$NZ" -m "$MODE" -c "$chunk" -nc "$chunk" -s "$SEED")
-        else
-            out=$("$BIN_PATH" -n "$N" -nz "$NZ" -m "$MODE" -t "$THREADS" -c "$chunk" -nc "$chunk" -s "$SEED")
-        fi
-        
-        t_tot=$(echo "$out" | extract_comp_time)
-        t_spmv=$(echo "$out" | extract_spmv_time)
-        t_vec=$(echo "$out" | extract_vecops_time)
-        t_epoch=$(echo "$out" | extract_epoch_time)
-        t_init=$(echo "$out" | extract_init_time)
-        
-        [[ -n "$t_tot" ]] && tot_times+=("$t_tot")
-        [[ -n "$t_spmv" ]] && spmv_times+=("$t_spmv")
-        [[ -n "$t_vec" ]] && vec_times+=("$t_vec")
-        [[ -n "$t_epoch" ]] && epoch_times+=("$t_epoch")
-        [[ -n "$t_init" ]] && init_times+=("$t_init")
-    done
+    local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
+    local ray1_var="${l1}_RAY" ray2_var="${l2}_RAY"
 
-    if [ ${#tot_times[@]} -gt 0 ]; then
-        med_tot=$(calculate_median "${tot_times[@]}")
-        med_spmv=$(calculate_median "${spmv_times[@]}")
-        med_vec=$(calculate_median "${vec_times[@]}")
-        med_epoch=$(calculate_median "${epoch_times[@]}")
-        med_init=$(calculate_median "${init_times[@]}")
+    echo "--- $l1 vs $l2 ---"
+
+    # 1. Checksum Comparison
+    if [ "${!chk1_var}" == "${!chk2_var}" ]; then
+        echo "  [OK] Checksums: MATCH (${!chk1_var})"
     else
-        med_tot=0; med_spmv=0; med_vec=0; med_epoch=0; med_init=0
+        echo "  [INFO] Checksums: DIFFER (${!chk1_var} vs ${!chk2_var})"
     fi
 
-    echo "$IMPL_LABEL,$chunk,$THREADS,$med_tot,$med_spmv,$med_vec,$med_epoch,$med_init" >> "$CSV_FILE"
-    echo "  -> Totale: ${med_tot}s [ SpMV: ${med_spmv}s | VectorOps: ${med_vec}s | Epoch: ${med_epoch}s | Init: ${med_init}s ]"
+    # 2. Rayleigh Comparison (with Tolerance)
+    local diff_val check_result
+    diff_val=$(awk -v v1="${!ray1_var}" -v v2="${!ray2_var}" \
+        'BEGIN { d = v1 - v2; if (d < 0) d = -d; printf "%.2e", d }')
+    check_result=$(awk -v v1="${!ray1_var}" -v v2="${!ray2_var}" -v tol="$TOLERANCE" \
+        'BEGIN { d = v1 - v2; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
+
+    if [ "$check_result" == "PASS" ]; then
+        echo "  [OK] Rayleigh: VALIDATED (Diff: $diff_val <= $TOLERANCE)"
+    else
+        echo "  [ERROR] Rayleigh: OUT OF TOLERANCE! (Diff: $diff_val > $TOLERANCE)"
+    fi
+
+    # 3. Vector Dump Comparison
+    if [ "$ENABLE_DUMP" = true ]; then
+        if [ -f "$d1" ] && [ -f "$d2" ]; then
+            if cmp -s "$d1" "$d2"; then
+                echo "  [OK] Dump Files: IDENTICAL"
+            else
+                echo "  [INFO] Dump Files: DIFFERENT (Expected in parallel contexts)"
+            fi
+        else
+            echo "  [WARN] Dump Files: NOT FOUND for comparison"
+        fi
+    fi
+    echo ""
+}
+
+# ==========================================
+# 4. Configuration Summary
+# ==========================================
+echo "=========================================================="
+echo " CROSS-VALIDATION CONFIGURATION "
+echo "=========================================================="
+echo "  Matrix (N x NZ):        $N x $NZ"
+echo "  Matrix mode:            $MODE (Seed: $SEED)"
+echo "  Enable Dump:            $ENABLE_DUMP"
+echo "  Numerical Tolerance:    $TOLERANCE"
+echo "=========================================================="
+
+# Costruzione del flag di dump condizionale
+DUMP_FLAG=()
+if [ "$ENABLE_DUMP" = true ]; then
+    DUMP_FLAG=("--dump-vector" "$SEQ_DUMP_FILE")
+fi
+
+# ==========================================
+# 5. Sequential Execution
+# ==========================================
+echo "Running SEQ..."
+run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" "${DUMP_FLAG[@]}"
+echo "----------------------------------------------------------"
+
+# ==========================================
+# 6. Single-node Implementations Execution
+# ==========================================
+for entry in "${IMPLS[@]}"; do
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+    ALL_LABELS+=("$label")
+    ALL_DUMPS+=("$dump_file")
+    
+    DUMP_FLAG=()
+    if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
+
+    echo "Running $label (-t $th, -c $chk)..."
+    run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
+        -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
+    echo "----------------------------------------------------------"
+done
+
+# ==========================================
+# 7. MPI+OpenMP Implementations Execution
+# ==========================================
+for entry in "${MPI_IMPLS[@]}"; do
+    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+    ALL_LABELS+=("$label")
+    ALL_DUMPS+=("$dump_file")
+
+    DUMP_FLAG=()
+    if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
+
+    echo "Running $label (MPI Ranks: $MPI_RANKS, OMP Threads: $OMP_THREADS_PER_RANK)..."
+    run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
+        -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
+    echo "----------------------------------------------------------"
+done
+
+# ==========================================
+# 8. Cross-Validation (Tutti contro Tutti)
+# ==========================================
+echo "=========================================================="
+echo " CROSS-VALIDATION RESULTS"
+echo "=========================================================="
+
+# Ciclo combinatorio: confronta ogni implementazione con tutte le successive
+for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
+    for (( j=i+1; j<${#ALL_LABELS[@]}; j++ )); do
+        compare_pairs "${ALL_LABELS[i]}" "${ALL_DUMPS[i]}" "${ALL_LABELS[j]}" "${ALL_DUMPS[j]}"
+    done
 done
 
 echo "=========================================================="
-echo " Test '$MODE_TYPE' completato con successo!"
-echo " Risultati salvati in: $CSV_FILE"
+echo " OVERALL TIMING SUMMARY"
+echo "=========================================================="
+for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
+    label="${ALL_LABELS[i]}"
+    t_var="${label}_TIME"
+    printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
+done
 echo "=========================================================="
