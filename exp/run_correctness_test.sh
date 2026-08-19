@@ -40,6 +40,11 @@ MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 # Numerical tolerance
 TOLERANCE="1e-12"
 
+# CSV output
+CSV_FILE="results.csv"
+CSV_HEADER="label,kind,computation_time,vector_ops_time,spmv_time,scatter_time,communication_time,reduction_time,epoch_transition_time,imbalance,checksum,rayleigh"
+printf '%s\n' "$CSV_HEADER" > "$CSV_FILE"
+
 # Vector dump control
 ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
@@ -77,6 +82,36 @@ print_optional_metric() {
     if [ -n "$value" ]; then
         echo "  -> ${label}: ${value} s"
     fi
+}
+
+write_csv_result() {
+    local label="$1"
+    local kind="$2"
+
+    local time_var="${label}_TIME"
+    local vecops_var="${label}_VECOPS"
+    local spmv_var="${label}_SPMV"
+    local scatt_var="${label}_SCATT"
+    local comm_var="${label}_COMM"
+    local red_var="${label}_RED"
+    local epoch_var="${label}_EPOCH"
+    local imb_var="${label}_IMBAL"
+    local chk_var="${label}_CHK"
+    local ray_var="${label}_RAY"
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$label" \
+        "$kind" \
+        "${!time_var:-N/A}" \
+        "${!vecops_var:-N/A}" \
+        "${!spmv_var:-N/A}" \
+        "${!scatt_var:-N/A}" \
+        "${!comm_var:-N/A}" \
+        "${!red_var:-N/A}" \
+        "${!epoch_var:-N/A}" \
+        "${!imb_var:-N/A}" \
+        "${!chk_var:-N/A}" \
+        "${!ray_var:-N/A}" >> "$CSV_FILE"
 }
 
 run_and_extract() {
@@ -120,6 +155,8 @@ run_and_extract() {
     print_optional_metric "Reduction" "$red_time"
     print_optional_metric "Epoch transition" "$epoch_time"
     print_optional_metric "Imbalance" "$imbalance"
+
+    write_csv_result "$label" "single_node"
 }
 
 run_and_extract_mpi() {
@@ -165,6 +202,8 @@ run_and_extract_mpi() {
     print_optional_metric "Reduction" "$red_time"
     print_optional_metric "Epoch transition" "$epoch_time"
     print_optional_metric "Imbalance" "$imbalance"
+
+    write_csv_result "$label" "mpi_omp"
 }
 
 compare_to_seq() {
