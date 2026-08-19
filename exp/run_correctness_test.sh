@@ -12,7 +12,7 @@ SEQ_BIN="../iterative_SpMV"
 
 # Problem Parameters (Small size for fast testing)
 N=1000000
-NZ=20000000
+NZ=25000000
 MODE="irregular"
 SEED=111
 
