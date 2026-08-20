@@ -91,7 +91,7 @@ for THREADS_PER_RANK in 1 2 4 8 16 32; do
         OUTPUT_MPI=$(OMP_NUM_THREADS="$THREADS_PER_RANK" \
             srun --time="$SRUN_TIME" --mpi=pmix \
                  -N "$N_NODES" -n "$TOTAL_RANKS" --cpus-per-task="$THREADS_PER_RANK" $EXTRA_SRUN_ARGS \
-                 "$MPI_OMP_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -c "$BLOCK_SIZE" -nc "$BLOCK_SIZE")
+                 "$MPI_OMP_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS_PER_RANK" -c "$BLOCK_SIZE" -nc "$BLOCK_SIZE")
 
         tot_times+=($(echo "$OUTPUT_MPI" | extract_time))
         comp_times+=($(echo "$OUTPUT_MPI" | extract_comp_time))
