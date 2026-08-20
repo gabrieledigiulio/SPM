@@ -16,7 +16,7 @@ N=1000000
 NZ=25000000
 MODE="irregular"
 SEED=111
-BLOCK_SIZE=1024
+BLOCK_SIZE=2048
 REPEATS=3
 
 # Hardware (Fissato per la configurazione massima)
