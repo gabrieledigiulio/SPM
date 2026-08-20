@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# SPM "One-Shot" Project - Correctness & Timing Verification Script (Optimized)
+# SPM "One-Shot" Project - Cross-Validation & Timing Script
 # ==============================================================================
 
 # ==========================================
@@ -27,27 +27,21 @@ OMP_CHUNK=16
 OMP_NORM_CHUNK=16
 
 # --- Optimal Parameters for MPI + OpenMP ---
-MPI_NODES=8         
-MPI_RANKS=8       
-OMP_THREADS_PER_RANK=16  
-MPI_CHUNK=16           
+MPI_NODES=8              # Number of physical machines
+MPI_RANKS=8              # 1 MPI process per node
+OMP_THREADS_PER_RANK=16  # Threads per rank
+MPI_CHUNK=16
 MPI_NORM_CHUNK=16
-
-# Vector dump control
-ENABLE_DUMP=true
 
 # Automatic mapping computation for OpenMPI
 RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
 MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 
-# Numerical tolerance
+# Numerical tolerance per Rayleigh
 TOLERANCE="1e-12"
 
-# CSV output
-CSV_FILE="results.csv"
-CSV_HEADER="label,kind,computation_time,vector_ops_time,spmv_time,scatter_time,communication_time,reduction_time,epoch_transition_time,imbalance,checksum,rayleigh"
-printf '%s\n' "$CSV_HEADER" > "$CSV_FILE"
-
+# Vector dump control
+ENABLE_DUMP=true
 SEQ_DUMP_FILE="seq_vec.dump"
 
 # ==========================================
@@ -63,17 +57,17 @@ MPI_IMPLS=(
     "MPI_OMP|../mpi_omp_SpMV|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
 )
 
+# Array per tracciare tutte le run eseguite per il cross-check finale
+ALL_LABELS=("SEQ")
+ALL_DUMPS=("$SEQ_DUMP_FILE")
+
 # ==========================================
 # 3. Extraction & Execution Functions
 # ==========================================
 extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_imbalance() { grep -oP 'imbalance=\K[-0-9.eE+]+' | head -1 || true; }
 extract_time()      { extract_comp_time; }
 extract_checksum()  { grep -oP 'checksum=\K0x[0-9a-fA-F]+' || true; }
 extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+' || true; }
@@ -85,65 +79,23 @@ print_optional_metric() {
     fi
 }
 
-write_csv_result() {
-    local label="$1"
-    local kind="$2"
-
-    local time_var="${label}_TIME"
-    local vecops_var="${label}_VECOPS"
-    local spmv_var="${label}_SPMV"
-    local scatt_var="${label}_SCATT"
-    local comm_var="${label}_COMM"
-    local red_var="${label}_RED"
-    local epoch_var="${label}_EPOCH"
-    local imb_var="${label}_IMBAL"
-    local chk_var="${label}_CHK"
-    local ray_var="${label}_RAY"
-
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$label" \
-        "$kind" \
-        "${!time_var:-N/A}" \
-        "${!vecops_var:-N/A}" \
-        "${!spmv_var:-N/A}" \
-        "${!scatt_var:-N/A}" \
-        "${!comm_var:-N/A}" \
-        "${!red_var:-N/A}" \
-        "${!epoch_var:-N/A}" \
-        "${!imb_var:-N/A}" \
-        "${!chk_var:-N/A}" \
-        "${!ray_var:-N/A}" >> "$CSV_FILE"
-}
-
 run_and_extract() {
     local label="$1"; shift
     local out
     out=$("$@")
 
-    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
+    local comp_time vecops_time spmv_time epoch_time
     comp_time=$(echo "$out" | extract_comp_time)
     if [ -z "$comp_time" ]; then
         comp_time=$(echo "$out" | extract_time)
     fi
     vecops_time=$(echo "$out" | extract_vecops_time)
     spmv_time=$(echo "$out" | extract_spmv_time)
-    scatt_time=$(echo "$out" | extract_scatt_time)
-    comm_time=$(echo "$out" | extract_comm_time)
-    red_time=$(echo "$out" | extract_red_time)
     epoch_time=$(echo "$out" | extract_epoch_time)
-    imbalance=$(echo "$out" | extract_imbalance)
 
     declare -g "${label}_TIME=${comp_time}"
-    declare -g "${label}_COMP=${comp_time}"
-    declare -g "${label}_VECOPS=${vecops_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
-    declare -g "${label}_SPMV=${spmv_time}"
-    declare -g "${label}_SCATT=${scatt_time}"
-    declare -g "${label}_COMM=${comm_time}"
-    declare -g "${label}_RED=${red_time}"
-    declare -g "${label}_EPOCH=${epoch_time}"
-    declare -g "${label}_IMBAL=${imbalance}"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
     echo "  -> Computation: ${!t_var} s"
@@ -151,13 +103,7 @@ run_and_extract() {
     echo "  -> Rayleigh:  ${!r_var}"
     print_optional_metric "Vector ops" "$vecops_time"
     print_optional_metric "SpMV" "$spmv_time"
-    print_optional_metric "Scatter" "$scatt_time"
-    print_optional_metric "Communication" "$comm_time"
-    print_optional_metric "Reduction" "$red_time"
     print_optional_metric "Epoch transition" "$epoch_time"
-    print_optional_metric "Imbalance" "$imbalance"
-
-    write_csv_result "$label" "single_node"
 }
 
 run_and_extract_mpi() {
@@ -167,143 +113,137 @@ run_and_extract_mpi() {
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
 
-    local comp_time vecops_time spmv_time scatt_time comm_time red_time epoch_time imbalance
+    local comp_time
     comp_time=$(echo "$out" | extract_comp_time)
     if [ -z "$comp_time" ]; then
         comp_time=$(echo "$out" | extract_time)
     fi
-    vecops_time=$(echo "$out" | extract_vecops_time)
-    spmv_time=$(echo "$out" | extract_spmv_time)
-    scatt_time=$(echo "$out" | extract_scatt_time)
-    comm_time=$(echo "$out" | extract_comm_time)
-    red_time=$(echo "$out" | extract_red_time)
-    epoch_time=$(echo "$out" | extract_epoch_time)
-    imbalance=$(echo "$out" | extract_imbalance)
 
     declare -g "${label}_TIME=${comp_time}"
-    declare -g "${label}_COMP=${comp_time}"
-    declare -g "${label}_VECOPS=${vecops_time}"
     declare -g "${label}_CHK=$(echo "$out" | extract_checksum)"
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
-    declare -g "${label}_SPMV=${spmv_time}"
-    declare -g "${label}_SCATT=${scatt_time}"
-    declare -g "${label}_COMM=${comm_time}"
-    declare -g "${label}_RED=${red_time}"
-    declare -g "${label}_EPOCH=${epoch_time}"
-    declare -g "${label}_IMBAL=${imbalance}"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
     echo "  -> Computation: ${!t_var} s"
     echo "  -> Checksum:  ${!c_var}"
     echo "  -> Rayleigh:  ${!r_var}"
-    print_optional_metric "Vector ops" "$vecops_time"
-    print_optional_metric "SpMV" "$spmv_time"
-    print_optional_metric "Scatter" "$scatt_time"
-    print_optional_metric "Communication" "$comm_time"
-    print_optional_metric "Reduction" "$red_time"
-    print_optional_metric "Epoch transition" "$epoch_time"
-    print_optional_metric "Imbalance" "$imbalance"
-
-    write_csv_result "$label" "mpi_omp"
 }
 
-compare_to_seq() {
-    local label="$1"
-    local dump_file="$2"
+compare_pairs() {
+    local l1="$1" d1="$2" l2="$3" d2="$4"
+    
+    local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
+    local ray1_var="${l1}_RAY" ray2_var="${l2}_RAY"
 
-    local seq_chk_var="SEQ_CHK" seq_ray_var="SEQ_RAY"
-    local par_chk_var="${label}_CHK" par_ray_var="${label}_RAY"
+    echo "--- $l1 vs $l2 ---"
 
-    echo "--- $label vs SEQ ---"
-
-    if [ "${!seq_chk_var}" == "${!par_chk_var}" ]; then
-        echo "  [INFO] Checksums Match (${!seq_chk_var})"
+    # 1. Checksum Comparison
+    if [ "${!chk1_var}" == "${!chk2_var}" ] && [ -n "${!chk1_var}" ]; then
+        echo "  [OK] Checksums: MATCH (${!chk1_var})"
     else
-        echo "  [INFO] Checksums Differ"
+        echo "  [INFO] Checksums: DIFFER (${!chk1_var:-N/A} vs ${!chk2_var:-N/A})"
     fi
 
-    local diff_val check_result
-    diff_val=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" \
-        'BEGIN { d = s - p; if (d < 0) d = -d; printf "%.2e", d }')
-    check_result=$(awk -v s="${!seq_ray_var}" -v p="${!par_ray_var}" -v tol="$TOLERANCE" \
-        'BEGIN { d = s - p; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
+    # 2. Rayleigh Comparison (with Tolerance)
+    if [ -n "${!ray1_var}" ] && [ -n "${!ray2_var}" ]; then
+        local diff_val check_result
+        diff_val=$(awk -v v1="${!ray1_var}" -v v2="${!ray2_var}" \
+            'BEGIN { d = v1 - v2; if (d < 0) d = -d; printf "%.2e", d }')
+        check_result=$(awk -v v1="${!ray1_var}" -v v2="${!ray2_var}" -v tol="$TOLERANCE" \
+            'BEGIN { d = v1 - v2; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
 
-    if [ "$check_result" == "PASS" ]; then
-        echo "  [OK] Rayleigh value: VALIDATED (Diff: $diff_val <= $TOLERANCE)"
+        if [ "$check_result" == "PASS" ]; then
+            echo "  [OK] Rayleigh: VALIDATED (Diff: $diff_val <= $TOLERANCE)"
+        else
+            echo "  [ERROR] Rayleigh: OUT OF TOLERANCE! (Diff: $diff_val > $TOLERANCE)"
+        fi
     else
-        echo "  [ERROR] Rayleigh value: OUT OF TOLERANCE! (Diff: $diff_val > $TOLERANCE)"
+        echo "  [ERROR] Rayleigh: MISSING VALUES"
+    fi
+
+    # 3. Vector Dump Comparison
+    if [ "$ENABLE_DUMP" = true ]; then
+        if [ -f "$d1" ] && [ -f "$d2" ]; then
+            if cmp -s "$d1" "$d2"; then
+                echo "  [OK] Dump Files: IDENTICAL"
+            else
+                echo "  [INFO] Dump Files: DIFFERENT (Expected in parallel contexts without ordered floating ops)"
+            fi
+        else
+            echo "  [WARN] Dump Files: NOT FOUND for comparison"
+        fi
     fi
     echo ""
 }
 
 # ==========================================
-# 4. Configuration Summary
+# 4. Execution
 # ==========================================
 echo "=========================================================="
-echo " TEST CONFIGURATION (OPTIMAL REPORT PARAMETERS)"
+echo " CROSS-VALIDATION CONFIGURATION "
 echo "=========================================================="
-echo "  Matrix (N x N):         $N"
-echo "  Non-zero elements (NZ): $NZ"
-echo "  Matrix mode:            $MODE"
-echo "  MPI nodes:              $MPI_NODES"
+echo "  Matrix (N x NZ):        $N x $NZ"
+echo "  Matrix mode:            $MODE (Seed: $SEED)"
+echo "  Enable Dump:            $ENABLE_DUMP"
+echo "  Numerical Tolerance:    $TOLERANCE"
 echo "=========================================================="
 
-# ==========================================
-# 5. Sequential Execution
-# ==========================================
-echo "Sequential Execution"
-run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED"
+# Costruzione del flag di dump condizionale
+DUMP_FLAG=()
+if [ "$ENABLE_DUMP" = true ]; then
+    DUMP_FLAG=("--dump-vector" "$SEQ_DUMP_FILE")
+fi
+
+echo "Running SEQ..."
+run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" "${DUMP_FLAG[@]}"
 echo "----------------------------------------------------------"
 
-# ==========================================
-# 6. Single-node Implementations Execution
-# ==========================================
 for entry in "${IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+    ALL_LABELS+=("$label")
+    ALL_DUMPS+=("$dump_file")
+    
+    DUMP_FLAG=()
+    if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
+
     echo "Running $label (-t $th, -c $chk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
-        -t "$th" -c "$chk" -nc "$nchk" -s "$SEED"
+        -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
     echo "----------------------------------------------------------"
 done
 
-# ==========================================
-# 7. MPI+OpenMP Implementations Execution
-# ==========================================
 for entry in "${MPI_IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    echo "Running $label (Nodes: $MPI_NODES, MPI_Ranks: $MPI_RANKS, OMP_Threads: $OMP_THREADS_PER_RANK, -c $chk)..."
+    ALL_LABELS+=("$label")
+    ALL_DUMPS+=("$dump_file")
+
+    DUMP_FLAG=()
+    if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
+
+    echo "Running $label (MPI Ranks: $MPI_RANKS, OMP Threads: $OMP_THREADS_PER_RANK)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
-        -c "$chk" -nc "$nchk" -s "$SEED"
+        -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
     echo "----------------------------------------------------------"
 done
 
 # ==========================================
-# 8. Correctness & Timing Verification
+# 5. Cross-Validation (Tutti contro Tutti)
 # ==========================================
 echo "=========================================================="
-echo " CORRECTNESS RESULTS (Tolerance: $TOLERANCE)"
+echo " CROSS-VALIDATION RESULTS"
 echo "=========================================================="
 
-for entry in "${IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    compare_to_seq "$label" "$dump_file"
-done
-for entry in "${MPI_IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    compare_to_seq "$label" "$dump_file"
+for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
+    for (( j=i+1; j<${#ALL_LABELS[@]}; j++ )); do
+        compare_pairs "${ALL_LABELS[i]}" "${ALL_DUMPS[i]}" "${ALL_LABELS[j]}" "${ALL_DUMPS[j]}"
+    done
 done
 
 echo "=========================================================="
 echo " OVERALL TIMING SUMMARY"
 echo "=========================================================="
-printf "  %-15s %10s s\n" "SEQ" "${SEQ_TIME:-N/A}"
-for entry in "${IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
-    t_var="${label}_TIME"
-    printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
-done
-for entry in "${MPI_IMPLS[@]}"; do
-    IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
+for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
+    label="${ALL_LABELS[i]}"
     t_var="${label}_TIME"
     printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
 done
