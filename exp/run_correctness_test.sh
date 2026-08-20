@@ -4,14 +4,6 @@ set -euo pipefail
 # ==============================================================================
 # SPM "One-Shot" Project - Cross-Validation & Timing Script (Slurm/srun style)
 # ==============================================================================
-#
-# Ogni binario viene lanciato con un `srun` "nudo" (senza sbatch/salloc che lo
-# avvolge): ogni chiamata è una richiesta di allocazione a sé stante. Slurm la
-# mette in coda se le risorse non sono libere, la esegue quando lo sono, e
-# rilascia i nodi subito dopo. Per questo la parte MPI (-N 8) occupa gli 8
-# nodi solo per la durata di quella singola run, lasciando tutto il resto del
-# tempo libero per altri job sul cluster.
-#
 
 # ==========================================
 # 1. Test Parameter Configuration
@@ -45,9 +37,9 @@ OMP_CHUNK=2048
 OMP_NORM_CHUNK=2048
 
 # --- Parametri per MPI + OpenMP ---
-MPI_NODES=8              # Numero di nodi fisici richiesti solo per questa fase
-MPI_RANKS=8               # 1 rank MPI per nodo
-OMP_THREADS_PER_RANK=16   # Thread OpenMP per rank
+MPI_NODES=8
+MPI_RANKS=8
+OMP_THREADS_PER_RANK=16
 MPI_CHUNK=2048
 MPI_NORM_CHUNK=2048
 
@@ -57,11 +49,11 @@ TOLERANCE="1e-12"
 # Vector dump control
 ENABLE_DUMP=true
 SEQ_DUMP_FILE="seq_vec.dump"
+CSV_OUTPUT="cross_validation_results.csv"
 
 # ==========================================
 # 2. Implementations to Test
 # ==========================================
-# Format: "LABEL|BINARY|DUMP_FILE|THREADS|CHUNK_SIZE|NORM_CHUNK"
 IMPLS=(
     "CPP_THREADS|$CPPTHREADS_BIN|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
     "OMP_TASKS|$OMP_TASKS_BIN|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
@@ -71,7 +63,6 @@ MPI_IMPLS=(
     "MPI_OMP|$MPI_OMP_BIN|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
 )
 
-# Array per tracciare tutte le run eseguite per il cross-check finale
 ALL_LABELS=("SEQ")
 ALL_DUMPS=("$SEQ_DUMP_FILE")
 
@@ -93,13 +84,9 @@ print_optional_metric() {
     fi
 }
 
-# Esegue un binario locale (1 nodo, 1 processo) con srun
 run_and_extract() {
     local label="$1" binary="$2"; shift 2
     local out
-
-    # Cerca dinamicamente il parametro -t negli argomenti per impostare i cpus-per-task.
-    # Se non c'è (es. binario SEQ), il default rimane 1.
     local cpus=1
     local args=("$@")
     for ((i=0; i<${#args[@]}; i++)); do
@@ -109,7 +96,6 @@ run_and_extract() {
         fi
     done
 
-    # Aggiunto --cpus-per-task in modo dinamico
     out=$(srun --time="$SRUN_TIME" -N 1 -n 1 --cpus-per-task="$cpus" "$binary" "$@")
 
     local comp_time vecops_time spmv_time epoch_time
@@ -134,12 +120,10 @@ run_and_extract() {
     print_optional_metric "Epoch transition" "$epoch_time"
 }
 
-# Esegue il binario MPI+OpenMP con srun
 run_and_extract_mpi() {
     local label="$1" binary="$2"; shift 2
     local out
 
-    # Aggiunto --cpus-per-task assegnando il valore di OMP_THREADS_PER_RANK
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_RANKS" \
                --cpus-per-task="$OMP_THREADS_PER_RANK" "$binary" "$@")
@@ -162,20 +146,17 @@ run_and_extract_mpi() {
 
 compare_pairs() {
     local l1="$1" d1="$2" l2="$3" d2="$4"
-
     local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
     local ray1_var="${l1}_RAY" ray2_var="${l2}_RAY"
 
     echo "--- $l1 vs $l2 ---"
 
-    # 1. Checksum Comparison
     if [ "${!chk1_var}" == "${!chk2_var}" ] && [ -n "${!chk1_var}" ]; then
         echo "  [OK] Checksums: MATCH (${!chk1_var})"
     else
         echo "  [INFO] Checksums: DIFFER (${!chk1_var:-N/A} vs ${!chk2_var:-N/A})"
     fi
 
-    # 2. Rayleigh Comparison (with Tolerance)
     if [ -n "${!ray1_var}" ] && [ -n "${!ray2_var}" ]; then
         local diff_val check_result
         diff_val=$(awk -v v1="${!ray1_var}" -v v2="${!ray2_var}" \
@@ -192,7 +173,6 @@ compare_pairs() {
         echo "  [ERROR] Rayleigh: MISSING VALUES"
     fi
 
-    # 3. Vector Dump Comparison (with Tolerance)
     if [ "$ENABLE_DUMP" = true ]; then
         if [ -f "$d1" ] && [ -f "$d2" ]; then
             if cmp -s "$d1" "$d2"; then
@@ -202,18 +182,12 @@ compare_pairs() {
                 dump_check=$(awk -v tol="$TOLERANCE" -v f2="$d2" '
                 {
                     v1 = $1;
-                    # Legge la riga corrispondente dal secondo file
                     if ((getline v2 < f2) <= 0) { print "FAIL_LENGTH"; exit 1 }
-                    
-                    # Calcola la differenza assoluta
                     d = v1 - v2; 
                     if (d < 0) d = -d;
-                    
-                    # Se anche solo un elemento sfora la tolleranza, fallisce
                     if (d > tol) { print "FAIL_TOLERANCE"; exit 1 }
                 }
                 END {
-                    # Controlla se il secondo file ha righe in più
                     if ((getline v2 < f2) > 0) { print "FAIL_LENGTH"; exit 1 }
                     print "PASS"
                 }' "$d1")
@@ -245,7 +219,6 @@ echo "  Numerical Tolerance:    $TOLERANCE"
 echo "  srun time limit/call:   $SRUN_TIME"
 echo "=========================================================="
 
-# Costruzione del flag di dump condizionale
 DUMP_FLAG=()
 if [ "$ENABLE_DUMP" = true ]; then
     DUMP_FLAG=("--dump-vector" "$SEQ_DUMP_FILE")
@@ -296,12 +269,32 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     done
 done
 
+# ==========================================
+# 6. Overall Timing & CSV Export Summary
+# ==========================================
 echo "=========================================================="
-echo " OVERALL TIMING SUMMARY"
+echo " OVERALL TIMING SUMMARY & CSV EXPORT"
 echo "=========================================================="
+
+# Creazione dell'intestazione del file CSV
+echo "Implementation,Computation_Time_s,Checksum,Rayleigh" > "$CSV_OUTPUT"
+
 for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     label="${ALL_LABELS[i]}"
     t_var="${label}_TIME"
-    printf "  %-15s %10s s\n" "$label" "${!t_var:-N/A}"
+    chk_var="${label}_CHK"
+    ray_var="${label}_RAY"
+    
+    t_val="${!t_var:-N/A}"
+    chk_val="${!chk_var:-N/A}"
+    ray_val="${!ray_var:-N/A}"
+
+    printf "  %-15s %10s s\n" "$label" "$t_val"
+    
+    # Scrittura della riga nel CSV
+    echo "$label,$t_val,$chk_val,$ray_val" >> "$CSV_OUTPUT"
 done
+
+echo "=========================================================="
+echo " Results successfully saved to: $CSV_OUTPUT"
 echo "=========================================================="
