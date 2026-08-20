@@ -192,19 +192,44 @@ compare_pairs() {
         echo "  [ERROR] Rayleigh: MISSING VALUES"
     fi
 
-    # 3. Vector Dump Comparison
+    # 3. Vector Dump Comparison (with Tolerance)
     if [ "$ENABLE_DUMP" = true ]; then
         if [ -f "$d1" ] && [ -f "$d2" ]; then
             if cmp -s "$d1" "$d2"; then
-                echo "  [OK] Dump Files: IDENTICAL"
+                echo "  [OK] Dump Files: IDENTICAL (Byte-for-byte)"
             else
-                echo "  [INFO] Dump Files: DIFFERENT (Expected in parallel contexts without ordered floating ops)"
+                local dump_check
+                dump_check=$(awk -v tol="$TOLERANCE" -v f2="$d2" '
+                {
+                    v1 = $1;
+                    # Legge la riga corrispondente dal secondo file
+                    if ((getline v2 < f2) <= 0) { print "FAIL_LENGTH"; exit 1 }
+                    
+                    # Calcola la differenza assoluta
+                    d = v1 - v2; 
+                    if (d < 0) d = -d;
+                    
+                    # Se anche solo un elemento sfora la tolleranza, fallisce
+                    if (d > tol) { print "FAIL_TOLERANCE"; exit 1 }
+                }
+                END {
+                    # Controlla se il secondo file ha righe in più
+                    if ((getline v2 < f2) > 0) { print "FAIL_LENGTH"; exit 1 }
+                    print "PASS"
+                }' "$d1")
+
+                if [ "$dump_check" == "PASS" ]; then
+                    echo "  [OK] Dump Files: VALIDATED (Tutti gli elementi rientrano in <= $TOLERANCE)"
+                elif [ "$dump_check" == "FAIL_LENGTH" ]; then
+                    echo "  [ERROR] Dump Files: DIFFER IN LENGTH!"
+                else
+                    echo "  [ERROR] Dump Files: OUT OF TOLERANCE!"
+                fi
             fi
         else
             echo "  [WARN] Dump Files: NOT FOUND for comparison"
         fi
     fi
-    echo ""
 }
 
 # ==========================================
