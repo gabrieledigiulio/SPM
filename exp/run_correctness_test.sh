@@ -10,28 +10,31 @@ set -euo pipefail
 # ==========================================
 SEQ_BIN="../iterative_SpMV"
 
-# Problem Parameters (Small size for fast testing)
-N=1000000
-NZ=25000000
+# Problem Parameters (Small size for fast testing & dumping)
+N=1000
+NZ=25000
 MODE="irregular"
 SEED=111
 
 # --- Optimal Parameters for C++ Threads ---
-CPP_THREADS=32
-CPP_CHUNK=2048
-CPP_NORM_CHUNK=2048
+CPP_THREADS=16
+CPP_CHUNK=16
+CPP_NORM_CHUNK=16
 
 # --- Optimal Parameters for OpenMP Tasks ---
-OMP_THREADS=32
-OMP_CHUNK=4096
-OMP_NORM_CHUNK=4096
+OMP_THREADS=16
+OMP_CHUNK=16
+OMP_NORM_CHUNK=16
 
 # --- Optimal Parameters for MPI + OpenMP ---
-MPI_NODES=8              # Number of physical machines
-MPI_RANKS=8              # 1 MPI process per node
-OMP_THREADS_PER_RANK=16  # Threads per rank
-MPI_CHUNK=1024
-MPI_NORM_CHUNK=1024
+MPI_NODES=8         
+MPI_RANKS=8       
+OMP_THREADS_PER_RANK=16  
+MPI_CHUNK=16           
+MPI_NORM_CHUNK=16
+
+# Vector dump control
+ENABLE_DUMP=true
 
 # Automatic mapping computation for OpenMPI
 RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
@@ -45,8 +48,6 @@ CSV_FILE="results.csv"
 CSV_HEADER="label,kind,computation_time,vector_ops_time,spmv_time,scatter_time,communication_time,reduction_time,epoch_transition_time,imbalance,checksum,rayleigh"
 printf '%s\n' "$CSV_HEADER" > "$CSV_FILE"
 
-# Vector dump control
-ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
 
 # ==========================================
