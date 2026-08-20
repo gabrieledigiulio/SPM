@@ -644,7 +644,11 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 const double final_dot_elapsed = MPI_Wtime() - tdot0;
                 timers.local_computation_sec += final_dot_elapsed;
                 timers.dot_sec += final_dot_elapsed;
+                const double tchk0 = MPI_Wtime();
                 result.checksum = checksum_vector(x_full);
+                const double chk_elapsed = MPI_Wtime() - tchk0;
+                timers.local_computation_sec += chk_elapsed;
+                timers.dot_sec += chk_elapsed;
                 result.final_row_shift = row_shift;
 
                 if (final_vector_out != nullptr) {
@@ -705,8 +709,8 @@ int main(int argc, char** argv) {
 
     if (provided < MPI_THREAD_FUNNELED) {
         if (rank == 0) {
-            std::cerr << "Error: l'implementazione MPI non supporta MPI_THREAD_FUNNELED "
-                      << "(richiesto per mescolare MPI e task OpenMP in sicurezza)\n";
+            std::cerr << "Error: the MPI implementation does not support MPI_THREAD_FUNNELED "
+                      << "(required to safely mix MPI and OpenMP tasks)\n";
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
         return 1;
@@ -715,32 +719,31 @@ int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
     std::uint64_t nz   = 0;
     std::uint64_t seed = 111;
-    std::uint64_t threads_arg = 0; // 0 = non specificato, usa OMP_NUM_THREADS
-    std::uint64_t chunk_size = 1000;
-    std::uint64_t norm_chunk_arg = 0;
+    std::uint64_t threads_arg, chunk_size, norm_chunk_arg;
     std::string mode;
     std::string dump_vector_path;
 
     // argv e' identico su ogni rank (mpirun lo replica), quindi ogni
     // processo puo' fare il parsing in modo indipendente, senza broadcast.
+    // Tutti i parametri tranne il seed sono nella condizione obbligatoria
     const bool args_ok = read_arg_u64(argc, argv, "-n", n64) &&
                          read_arg_u64(argc, argv, "-nz", nz) &&
-                         read_arg_str(argc, argv, "-m", mode);
+                         read_arg_str(argc, argv, "-m", mode) &&
+                         read_arg_u64(argc, argv, "-t", threads_arg) &&
+                         read_arg_u64(argc, argv, "-c", chunk_size) &&
+                         read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
 
     if (!args_ok) {
         if (rank == 0) {
-            std::cerr << "Uso: " << argv[0]
-                      << " -n N -nz K -m regular|irregular [-t THREADS] [-c CHUNK_SIZE] "
-                      << "[-nc NORM_CHUNK_SIZE] [-s SEED] [--dump-vector FILE]\n";
+            std::cerr << "Usage: " << argv[0]
+                      << " -n N -nz K -m regular|irregular -t THREADS -c CHUNK_SIZE -nc NORM_CHUNK_SIZE [-s SEED] [--dump-vector FILE]\n";
         }
         MPI_Finalize();
         return 1;
     }
 
+    // Lettura opzionale del seed e del dump
     (void)read_arg_u64(argc, argv, "-s", seed);
-    (void)read_arg_u64(argc, argv, "-t", threads_arg);
-    (void)read_arg_u64(argc, argv, "-c", chunk_size);
-    (void)read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
     (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
     const std::size_t n = static_cast<std::size_t>(n64);
@@ -792,7 +795,7 @@ int main(int argc, char** argv) {
                                             norm_chunk_size, final_vector_out);
 
         if (rank == 0) {
-            std::cout << "Breakdown tempi (secondi, aggregati su " << num_ranks << " rank):\n";
+            std::cout << "Time breakdown (seconds, aggregated over " << num_ranks << " ranks):\n";
         }
         reduce_and_print_timer("Computation time (sec)", mpi_result.timers.local_computation_sec, num_ranks, rank);
         reduce_and_print_timer("SpMV time (sec)", mpi_result.timers.spmv_sec, num_ranks, rank);

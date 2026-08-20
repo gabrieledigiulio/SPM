@@ -161,11 +161,6 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
 
     const double t_start_total = omp_get_wtime();
 
-    SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
-    for (double& v : x) {
-        v = rng.next_unit();
-    }
-
     std::size_t row_shift = 0;
 
     #pragma omp parallel num_threads(num_threads) default(none) \
@@ -174,8 +169,12 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
     {
         #pragma omp single
         {
-            // Fase 1: Init e normalizzazione iniziale
+            // Fase 1: Init (RNG + normalizzazione iniziale)
             const double t_init0 = omp_get_wtime();
+            SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
+            for (double& v : x) {
+                v = rng.next_unit();
+            }
             normalize_omp_tasks(x, norm_chunk_size);
             timers.init_sec = omp_get_wtime() - t_init0;
 
@@ -211,7 +210,9 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
             result.rayleigh = dot_omp_tasks(x, y, norm_chunk_size);
             timers.vector_ops_sec += omp_get_wtime() - t_vec_final;
             
+            const double t_chk0 = omp_get_wtime();
             result.checksum = checksum_vector(x);
+            timers.vector_ops_sec += omp_get_wtime() - t_chk0;
             result.final_row_shift = row_shift;
 
             if (final_vector != nullptr) {
@@ -232,23 +233,25 @@ int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
     std::uint64_t nz   = 0;
     std::uint64_t seed = 111;
-    std::uint64_t num_threads = 4;
-    std::uint64_t chunk_size = 1000;
-    std::uint64_t norm_chunk_arg = 0;
+    std::uint64_t num_threads, chunk_size, norm_chunk_arg;
     std::string mode;
     std::string dump_vector_path;
 
+    // -n, -nz, -m, -t, -c, -nc sono TUTTI obbligatori
     if (!read_arg_u64(argc, argv, "-n", n64) ||
         !read_arg_u64(argc, argv, "-nz", nz) ||
-        !read_arg_str(argc, argv, "-m", mode)) {
-        std::cerr << "Uso: " << argv[0] << " -n N -nz K -m regular|irregular [-t THREADS] [-c CHUNK_SIZE] [-nc NORM_CHUNK_SIZE] [-s SEED] [--dump-vector FILE]\n";
+        !read_arg_str(argc, argv, "-m", mode) ||
+        !read_arg_u64(argc, argv, "-t", num_threads) ||
+        !read_arg_u64(argc, argv, "-c", chunk_size) ||
+        !read_arg_u64(argc, argv, "-nc", norm_chunk_arg)) {
+        
+        std::cerr << "Usage: " << argv[0] 
+                  << " -n N -nz K -m regular|irregular -t THREADS -c CHUNK_SIZE -nc NORM_CHUNK_SIZE [-s SEED] [--dump-vector FILE]\n";
         return 1;
     }
 
+    // Solo seed e dump-vector rimangono opzionali
     (void)read_arg_u64(argc, argv, "-s", seed);
-    (void)read_arg_u64(argc, argv, "-t", num_threads);
-    (void)read_arg_u64(argc, argv, "-c", chunk_size);
-    (void)read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
     (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
     const std::size_t n = static_cast<std::size_t>(n64);
@@ -275,7 +278,7 @@ int main(int argc, char** argv) {
         const OmpIterativeResult out = iterative_spmv_evolving(
             G.A, seed, num_threads, chunk_size, norm_chunk_size, final_vector_out);
 
-        std::cout << "Breakdown tempi (secondi):\n";
+        std::cout << "Time breakdown (seconds):\n";
         std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
         std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
         std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";

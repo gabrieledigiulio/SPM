@@ -161,12 +161,12 @@ iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
 
   const auto t_start_total = std::chrono::steady_clock::now();
 
+  // Fase 1: Inizializzazione (RNG + normalizzazione)
+  auto t0 = std::chrono::steady_clock::now();
   SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
   for (double &v : x) {
     v = rng.next_unit();
   }
-  
-  auto t0 = std::chrono::steady_clock::now();
   normalize(x);
   timers.init_sec = get_elapsed(t0);
 
@@ -198,7 +198,9 @@ iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
   result.rayleigh = dot(x, y);
   timers.vector_ops_sec += get_elapsed(t0);
   
+  t0 = std::chrono::steady_clock::now();
   result.checksum = checksum_vector(x);
+  timers.vector_ops_sec += get_elapsed(t0);
   result.final_row_shift = row_shift;
 
   if (final_vector != nullptr) {
@@ -248,7 +250,7 @@ int main(int argc, char **argv) {
     const SeqIterativeResult out =
         iterative_spmv_evolving(G.A, seed, final_vector_out);
 
-    std::cout << "Breakdown tempi (secondi):\n";
+    std::cout << "Time breakdown (seconds):\n";
     std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
     std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
     std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";

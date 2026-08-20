@@ -179,13 +179,12 @@ static ThreadPoolIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
 
     const auto t_start_total = std::chrono::steady_clock::now();
 
+    // Fase 1: Inizializzazione (RNG + normalizzazione)
+    auto t0 = std::chrono::steady_clock::now();
     SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
     for (double& v : x) {
         v = rng.next_unit();
     }
-    
-    // Fase 1: Inizializzazione
-    auto t0 = std::chrono::steady_clock::now();
     normalize_parallel(x, pool, norm_chunk_size); 
     timers.init_sec = get_elapsed(t0);
 
@@ -219,7 +218,9 @@ static ThreadPoolIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
     result.rayleigh = dot_parallel(x, y, pool, norm_chunk_size); 
     timers.vector_ops_sec += get_elapsed(t0);
 
+    t0 = std::chrono::steady_clock::now();
     result.checksum = checksum_vector(x);
+    timers.vector_ops_sec += get_elapsed(t0);
     result.final_row_shift = row_shift;
 
     if (final_vector != nullptr) {
@@ -238,23 +239,25 @@ int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
     std::uint64_t nz   = 0;
     std::uint64_t seed = 111;
-    std::uint64_t num_threads = 4;
-    std::uint64_t chunk_size = 1000;
-    std::uint64_t norm_chunk_arg = 0; 
+    std::uint64_t num_threads, chunk_size, norm_chunk_arg;
     std::string mode;
     std::string dump_vector_path;
 
+    // Parametri base e di parallelismo sono obbligatori
     if (!read_arg_u64(argc, argv, "-n", n64) ||
         !read_arg_u64(argc, argv, "-nz", nz) ||
-        !read_arg_str(argc, argv, "-m", mode)) {
-        std::cerr << "Uso: " << argv[0] << " -n N -nz K -m regular|irregular [-t THREADS] [-c CHUNK_SIZE] [-nc NORM_CHUNK_SIZE] [-s SEED] [--dump-vector FILE]\n";
+        !read_arg_str(argc, argv, "-m", mode) ||
+        !read_arg_u64(argc, argv, "-t", num_threads) ||
+        !read_arg_u64(argc, argv, "-c", chunk_size) ||
+        !read_arg_u64(argc, argv, "-nc", norm_chunk_arg)) {
+        
+        std::cerr << "Usage: " << argv[0] 
+                  << " -n N -nz K -m regular|irregular -t THREADS -c CHUNK_SIZE -nc NORM_CHUNK_SIZE [-s SEED] [--dump-vector FILE]\n";
         return 1;
     }
 
+    // Lettura opzionale per seed e dump
     (void)read_arg_u64(argc, argv, "-s", seed);
-    (void)read_arg_u64(argc, argv, "-t", num_threads);
-    (void)read_arg_u64(argc, argv, "-c", chunk_size);
-    (void)read_arg_u64(argc, argv, "-nc", norm_chunk_arg);
     (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
     const std::size_t n = static_cast<std::size_t>(n64);
@@ -283,7 +286,7 @@ int main(int argc, char** argv) {
         const ThreadPoolIterativeResult out = iterative_spmv_evolving(
             G.A, seed, pool, chunk_size, norm_chunk_size, final_vector_out);
 
-        std::cout << "Breakdown tempi (secondi):\n";
+        std::cout << "Time breakdown (seconds):\n";
         std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
         std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
         std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
