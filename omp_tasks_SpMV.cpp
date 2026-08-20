@@ -165,7 +165,7 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
 
     #pragma omp parallel num_threads(num_threads) default(none) \
         shared(A, x, y, n, shift_rows, chunk_size, norm_chunk_size, \
-               row_shift, result, final_vector, timers)
+               row_shift, result, final_vector, timers, seed)
     {
         #pragma omp single
         {

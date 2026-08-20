@@ -91,7 +91,7 @@ static void dump_vector(const std::string &path, const std::vector<double> &x) {
   }
 }
 
-static void usage(const char *prog) {
+inline void usage(const char *prog) {
   std::cerr
       << "Usage:\n"
       << "  " << prog
