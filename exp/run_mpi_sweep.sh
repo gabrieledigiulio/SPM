@@ -8,7 +8,7 @@ set -euo pipefail
 # ==========================================
 # 1. Configurazione Parametri Benchmark
 # ==========================================
-MPI_OMP_BIN="../mpi_omp_SpMV" # <-- Assicurati del nome corretto
+MPI_OMP_BIN="../mpi_omp_tasks_SpMV" 
 SRUN_TIME="00:10:00"
 
 # Matrice Grande per test prestazionali
