@@ -2,13 +2,31 @@
 set -euo pipefail
 
 # ==============================================================================
-# SPM "One-Shot" Project - Cross-Validation & Timing Script
+# SPM "One-Shot" Project - Cross-Validation & Timing Script (Slurm/srun style)
 # ==============================================================================
+#
+# Ogni binario viene lanciato con un `srun` "nudo" (senza sbatch/salloc che lo
+# avvolge): ogni chiamata è una richiesta di allocazione a sé stante. Slurm la
+# mette in coda se le risorse non sono libere, la esegue quando lo sono, e
+# rilascia i nodi subito dopo. Per questo la parte MPI (-N 8) occupa gli 8
+# nodi solo per la durata di quella singola run, lasciando tutto il resto del
+# tempo libero per altri job sul cluster.
+#
 
 # ==========================================
 # 1. Test Parameter Configuration
 # ==========================================
 SEQ_BIN="../iterative_SpMV"
+CPPTHREADS_BIN="../threadpool_SpMV"
+OMP_TASKS_BIN="../omp_tasks_SpMV"
+MPI_OMP_BIN="../mpi_omp_tasks_SpMV"
+
+# Tempo massimo per ogni singola chiamata srun
+SRUN_TIME="00:05:00"
+
+# Affinity dei thread OpenMP (coerente su tutte le run)
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
 
 # Problem Parameters (Small size for fast testing & dumping)
 N=1000
@@ -16,26 +34,22 @@ NZ=25000
 MODE="irregular"
 SEED=111
 
-# --- Optimal Parameters for C++ Threads ---
+# --- Parametri per C++ Threads ---
 CPP_THREADS=16
 CPP_CHUNK=16
 CPP_NORM_CHUNK=16
 
-# --- Optimal Parameters for OpenMP Tasks ---
+# --- Parametri per OpenMP Tasks ---
 OMP_THREADS=16
 OMP_CHUNK=16
 OMP_NORM_CHUNK=16
 
-# --- Optimal Parameters for MPI + OpenMP ---
-MPI_NODES=8              # Number of physical machines
-MPI_RANKS=8              # 1 MPI process per node
-OMP_THREADS_PER_RANK=16  # Threads per rank
+# --- Parametri per MPI + OpenMP ---
+MPI_NODES=8              # Numero di nodi fisici richiesti solo per questa fase
+MPI_RANKS=8               # 1 rank MPI per nodo
+OMP_THREADS_PER_RANK=16   # Thread OpenMP per rank
 MPI_CHUNK=16
 MPI_NORM_CHUNK=16
-
-# Automatic mapping computation for OpenMPI
-RANKS_PER_NODE=$(( MPI_RANKS / MPI_NODES ))
-MPIRUN_EXTRA_ARGS="--map-by ppr:${RANKS_PER_NODE}:node"
 
 # Numerical tolerance per Rayleigh
 TOLERANCE="1e-12"
@@ -49,12 +63,12 @@ SEQ_DUMP_FILE="seq_vec.dump"
 # ==========================================
 # Format: "LABEL|BINARY|DUMP_FILE|THREADS|CHUNK_SIZE|NORM_CHUNK"
 IMPLS=(
-    "CPP_THREADS|../threadpool_SpMV|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
-    "OMP_TASKS|../omp_tasks_SpMV|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
+    "CPP_THREADS|$CPPTHREADS_BIN|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
+    "OMP_TASKS|$OMP_TASKS_BIN|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
 )
 
 MPI_IMPLS=(
-    "MPI_OMP|../mpi_omp_SpMV|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
+    "MPI_OMP|$MPI_OMP_BIN|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
 )
 
 # Array per tracciare tutte le run eseguite per il cross-check finale
@@ -79,10 +93,13 @@ print_optional_metric() {
     fi
 }
 
+# Esegue un binario locale (1 nodo, 1 processo) con srun: la chiamata resta
+# in coda finché Slurm non trova un nodo libero, poi lo rilascia a fine run.
 run_and_extract() {
-    local label="$1"; shift
+    local label="$1" binary="$2"; shift 2
     local out
-    out=$("$@")
+
+    out=$(srun --time="$SRUN_TIME" -N 1 -n 1 "$binary" "$@")
 
     local comp_time vecops_time spmv_time epoch_time
     comp_time=$(echo "$out" | extract_comp_time)
@@ -106,12 +123,17 @@ run_and_extract() {
     print_optional_metric "Epoch transition" "$epoch_time"
 }
 
+# Esegue il binario MPI+OpenMP con srun: chiede MPI_NODES nodi (e li tiene
+# solo per questa chiamata), 1 rank per nodo, OMP_THREADS_PER_RANK thread
+# ciascuno. --mpi=pmix e' il plugin di bootstrap richiesto per lanciare i
+# rank MPI sotto Slurm.
 run_and_extract_mpi() {
     local label="$1" binary="$2"; shift 2
     local out
 
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
-          mpirun -np "$MPI_RANKS" $MPIRUN_EXTRA_ARGS "$binary" "$@")
+          srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_RANKS" \
+               "$binary" "$@")
 
     local comp_time
     comp_time=$(echo "$out" | extract_comp_time)
@@ -131,7 +153,7 @@ run_and_extract_mpi() {
 
 compare_pairs() {
     local l1="$1" d1="$2" l2="$3" d2="$4"
-    
+
     local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
     local ray1_var="${l1}_RAY" ray2_var="${l2}_RAY"
 
@@ -186,6 +208,7 @@ echo "  Matrix (N x NZ):        $N x $NZ"
 echo "  Matrix mode:            $MODE (Seed: $SEED)"
 echo "  Enable Dump:            $ENABLE_DUMP"
 echo "  Numerical Tolerance:    $TOLERANCE"
+echo "  srun time limit/call:   $SRUN_TIME"
 echo "=========================================================="
 
 # Costruzione del flag di dump condizionale
@@ -202,11 +225,11 @@ for entry in "${IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
     ALL_LABELS+=("$label")
     ALL_DUMPS+=("$dump_file")
-    
+
     DUMP_FLAG=()
     if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
 
-    echo "Running $label (-t $th, -c $chk)..."
+    echo "Running $label (-N 1, -t $th, -c $chk, -nc $nchk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
     echo "----------------------------------------------------------"
@@ -220,9 +243,9 @@ for entry in "${MPI_IMPLS[@]}"; do
     DUMP_FLAG=()
     if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
 
-    echo "Running $label (MPI Ranks: $MPI_RANKS, OMP Threads: $OMP_THREADS_PER_RANK)..."
+    echo "Running $label (-N $MPI_NODES, -n $MPI_RANKS, -t $th, -c $chk, -nc $nchk)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
-        -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
+        -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
     echo "----------------------------------------------------------"
 done
 
