@@ -93,13 +93,24 @@ print_optional_metric() {
     fi
 }
 
-# Esegue un binario locale (1 nodo, 1 processo) con srun: la chiamata resta
-# in coda finché Slurm non trova un nodo libero, poi lo rilascia a fine run.
+# Esegue un binario locale (1 nodo, 1 processo) con srun
 run_and_extract() {
     local label="$1" binary="$2"; shift 2
     local out
 
-    out=$(srun --time="$SRUN_TIME" -N 1 -n 1 "$binary" "$@")
+    # Cerca dinamicamente il parametro -t negli argomenti per impostare i cpus-per-task.
+    # Se non c'è (es. binario SEQ), il default rimane 1.
+    local cpus=1
+    local args=("$@")
+    for ((i=0; i<${#args[@]}; i++)); do
+        if [[ "${args[$i]}" == "-t" ]]; then
+            cpus="${args[$i+1]}"
+            break
+        fi
+    done
+
+    # Aggiunto --cpus-per-task in modo dinamico
+    out=$(srun --time="$SRUN_TIME" -N 1 -n 1 --cpus-per-task="$cpus" "$binary" "$@")
 
     local comp_time vecops_time spmv_time epoch_time
     comp_time=$(echo "$out" | extract_comp_time)
@@ -123,17 +134,15 @@ run_and_extract() {
     print_optional_metric "Epoch transition" "$epoch_time"
 }
 
-# Esegue il binario MPI+OpenMP con srun: chiede MPI_NODES nodi (e li tiene
-# solo per questa chiamata), 1 rank per nodo, OMP_THREADS_PER_RANK thread
-# ciascuno. --mpi=pmix e' il plugin di bootstrap richiesto per lanciare i
-# rank MPI sotto Slurm.
+# Esegue il binario MPI+OpenMP con srun
 run_and_extract_mpi() {
     local label="$1" binary="$2"; shift 2
     local out
 
+    # Aggiunto --cpus-per-task assegnando il valore di OMP_THREADS_PER_RANK
     out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
           srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_RANKS" \
-               "$binary" "$@")
+               --cpus-per-task="$OMP_THREADS_PER_RANK" "$binary" "$@")
 
     local comp_time
     comp_time=$(echo "$out" | extract_comp_time)
