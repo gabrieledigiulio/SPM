@@ -36,20 +36,20 @@ SEED=111
 
 # --- Parametri per C++ Threads ---
 CPP_THREADS=16
-CPP_CHUNK=16
-CPP_NORM_CHUNK=16
+CPP_CHUNK=1024
+CPP_NORM_CHUNK=1024
 
 # --- Parametri per OpenMP Tasks ---
 OMP_THREADS=16
-OMP_CHUNK=16
-OMP_NORM_CHUNK=16
+OMP_CHUNK=1024
+OMP_NORM_CHUNK=1024
 
 # --- Parametri per MPI + OpenMP ---
 MPI_NODES=8              # Numero di nodi fisici richiesti solo per questa fase
 MPI_RANKS=8               # 1 rank MPI per nodo
 OMP_THREADS_PER_RANK=16   # Thread OpenMP per rank
-MPI_CHUNK=16
-MPI_NORM_CHUNK=16
+MPI_CHUNK=1024
+MPI_NORM_CHUNK=1024
 
 # Numerical tolerance per Rayleigh
 TOLERANCE="1e-12"
