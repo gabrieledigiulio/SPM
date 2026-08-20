@@ -29,7 +29,7 @@ export OMP_PROC_BIND=close
 
 # Output
 OUTPUT_DIR="results"
-OUTPUT_FILE="${OUTPUT_DIR}/mpi_omp_hybrid_sweep.csv"
+OUTPUT_FILE="${OUTPUT_DIR}/mpi_sweep_results.csv"
 mkdir -p "$OUTPUT_DIR"
 
 echo "Nodes,Total_Ranks,Threads_Per_Rank,Block_Size,Total_Time_Med,Comp_Time_Med,Comm_Time_Med,Red_Time_Med,Epoch_Time_Med,Scatt_Time_Med" > "$OUTPUT_FILE"
