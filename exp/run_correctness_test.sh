@@ -21,8 +21,8 @@ export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
 # Problem Parameters (Small size for fast testing & dumping)
-N=1000
-NZ=250000
+N=1000000
+NZ=250000000
 MODE="irregular"
 SEED=111
 
