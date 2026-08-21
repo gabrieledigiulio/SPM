@@ -24,7 +24,7 @@ MODE="irregular"
 SEED=111
 
 # Topologia Hardware
-THREADS=32
+THREADS=16
 MPI_NODES=8
 MPI_RANKS=8
 
@@ -34,7 +34,7 @@ REPEATS=3
 
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
-CSV_OUTPUT="${RESULT_DIR}/granularity_results_32threads_medians.csv"
+CSV_OUTPUT="${RESULT_DIR}/granularity_results_16threads_medians.csv"
 
 # ==========================================
 # 2. Extraction & Math Functions
