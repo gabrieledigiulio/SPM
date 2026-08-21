@@ -303,6 +303,11 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
         fi
     done
 
+    if [ "$ENABLE_DUMP" = true ] && [ "$same_dump" -eq 0 ]; then
+        echo "  [SKIP] $label: dump comparison failed, row not saved to CSV"
+        continue
+    fi
+
     printf "  %-15s %10s s\n" "$label" "$t_val"
 
     # Scrittura della riga nel CSV
