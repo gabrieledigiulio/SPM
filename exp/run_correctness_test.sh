@@ -14,7 +14,7 @@ OMP_TASKS_BIN="../omp_tasks_SpMV"
 MPI_OMP_BIN="../mpi_omp_tasks_SpMV"
 
 # Tempo massimo per ogni singola chiamata srun
-SRUN_TIME="00:05:00"
+SRUN_TIME="00:15:00"
 
 # Affinity dei thread OpenMP (coerente su tutte le run)
 export OMP_PLACES=cores
