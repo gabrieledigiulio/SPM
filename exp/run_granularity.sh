@@ -24,7 +24,7 @@ MODE="irregular"
 SEED=111
 
 # Topologia Hardware
-THREADS=32
+THREADS=16
 MPI_NODES=8
 MPI_RANKS=8
 
@@ -39,11 +39,23 @@ CSV_OUTPUT="${RESULT_DIR}/granularity_results_32threads_medians.csv"
 # ==========================================
 # 2. Extraction & Math Functions
 # ==========================================
-extract_total_time()  { grep -oP '(?:Total time|Total) \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_comp_time()   { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
+extract_total_time()  { grep -oP '^Time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_spmv_time()   { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_epoch_time()  { grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
+
+extract_comp_time() {
+    local vec_time="$1"
+    local spmv_time="$2"
+    local epoch_time="$3"
+
+    if [[ -z "$vec_time" || -z "$spmv_time" || -z "$epoch_time" || "$vec_time" == "N/A" || "$spmv_time" == "N/A" || "$epoch_time" == "N/A" ]]; then
+        echo "N/A"
+        return 0
+    fi
+
+    awk -v v="$vec_time" -v s="$spmv_time" -v e="$epoch_time" 'BEGIN { printf "%.12f", v + s + e }'
+}
 
 # Funzione per calcolare la mediana riadattata al tuo stile
 calculate_median() {
@@ -98,31 +110,49 @@ for b in "${BLOCK_SIZES[@]}"; do
         out_cpp=$(srun --time="$SRUN_TIME" -N 1 -n 1 --cpus-per-task="$THREADS" \
             "$CPPTHREADS_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$b" -nc "$b")
         
-        cpp_tot+=($(echo "$out_cpp" | extract_total_time))
-        cpp_comp+=($(echo "$out_cpp" | extract_comp_time))
-        cpp_vec+=($(echo "$out_cpp" | extract_vecops_time))
-        cpp_spmv+=($(echo "$out_cpp" | extract_spmv_time))
-        cpp_ep+=($(echo "$out_cpp" | extract_epoch_time))
+        cpp_tot_val=$(echo "$out_cpp" | extract_total_time)
+        cpp_vec_val=$(echo "$out_cpp" | extract_vecops_time)
+        cpp_spmv_val=$(echo "$out_cpp" | extract_spmv_time)
+        cpp_ep_val=$(echo "$out_cpp" | extract_epoch_time)
+        cpp_comp_val=$(extract_comp_time "$cpp_vec_val" "$cpp_spmv_val" "$cpp_ep_val")
+
+        cpp_tot+=("$cpp_tot_val")
+        cpp_comp+=("$cpp_comp_val")
+        cpp_vec+=("$cpp_vec_val")
+        cpp_spmv+=("$cpp_spmv_val")
+        cpp_ep+=("$cpp_ep_val")
 
         # --- 2. OpenMP Tasks ---
         out_omp=$(srun --time="$SRUN_TIME" -N 1 -n 1 --cpus-per-task="$THREADS" \
             "$OMP_TASKS_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$b" -nc "$b")
         
-        omp_tot+=($(echo "$out_omp" | extract_total_time))
-        omp_comp+=($(echo "$out_omp" | extract_comp_time))
-        omp_vec+=($(echo "$out_omp" | extract_vecops_time))
-        omp_spmv+=($(echo "$out_omp" | extract_spmv_time))
-        omp_ep+=($(echo "$out_omp" | extract_epoch_time))
+        omp_tot_val=$(echo "$out_omp" | extract_total_time)
+        omp_vec_val=$(echo "$out_omp" | extract_vecops_time)
+        omp_spmv_val=$(echo "$out_omp" | extract_spmv_time)
+        omp_ep_val=$(echo "$out_omp" | extract_epoch_time)
+        omp_comp_val=$(extract_comp_time "$omp_vec_val" "$omp_spmv_val" "$omp_ep_val")
+
+        omp_tot+=("$omp_tot_val")
+        omp_comp+=("$omp_comp_val")
+        omp_vec+=("$omp_vec_val")
+        omp_spmv+=("$omp_spmv_val")
+        omp_ep+=("$omp_ep_val")
 
         # --- 3. MPI + OpenMP ---
         out_mpi=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_RANKS" \
             --cpus-per-task="$THREADS" "$MPI_OMP_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$b" -nc "$b")
         
-        mpi_tot+=($(echo "$out_mpi" | extract_total_time))
-        mpi_comp+=($(echo "$out_mpi" | extract_comp_time))
-        mpi_vec+=($(echo "$out_mpi" | extract_vecops_time))
-        mpi_spmv+=($(echo "$out_mpi" | extract_spmv_time))
-        mpi_ep+=($(echo "$out_mpi" | extract_epoch_time))
+        mpi_tot_val=$(echo "$out_mpi" | extract_total_time)
+        mpi_vec_val=$(echo "$out_mpi" | extract_vecops_time)
+        mpi_spmv_val=$(echo "$out_mpi" | extract_spmv_time)
+        mpi_ep_val=$(echo "$out_mpi" | extract_epoch_time)
+        mpi_comp_val=$(extract_comp_time "$mpi_vec_val" "$mpi_spmv_val" "$mpi_ep_val")
+
+        mpi_tot+=("$mpi_tot_val")
+        mpi_comp+=("$mpi_comp_val")
+        mpi_vec+=("$mpi_vec_val")
+        mpi_spmv+=("$mpi_spmv_val")
+        mpi_ep+=("$mpi_ep_val")
     done
 
     # --- Calcolo mediane e salvataggio su CSV ---
