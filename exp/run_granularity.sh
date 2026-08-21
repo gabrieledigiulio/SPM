@@ -24,7 +24,7 @@ MODE="irregular"
 SEED=111
 
 # Topologia Hardware
-THREADS=16
+THREADS=32
 MPI_NODES=8
 MPI_RANKS=8
 
