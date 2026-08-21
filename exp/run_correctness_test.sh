@@ -49,7 +49,9 @@ TOLERANCE="1e-12"
 # Vector dump control
 ENABLE_DUMP=true
 SEQ_DUMP_FILE="seq_vec.dump"
-CSV_OUTPUT="cross_validation_results.csv"
+RESULT_DIR="result"
+mkdir -p "$RESULT_DIR"
+CSV_OUTPUT="${RESULT_DIR}/cross_validation_results.csv"
 
 # ==========================================
 # 2. Implementations to Test
@@ -144,6 +146,26 @@ run_and_extract_mpi() {
     echo "  -> Rayleigh:  ${!r_var}"
 }
 
+dump_matches_tolerance() {
+    local f1="$1"
+    local f2="$2"
+
+    if [ -z "$f1" ] || [ -z "$f2" ] || [ ! -f "$f1" ] || [ ! -f "$f2" ]; then
+        return 1
+    fi
+
+    paste -d ' ' "$f1" "$f2" 2>/dev/null | awk -v tol="$TOLERANCE" '
+        BEGIN { ok = 1 }
+        NF < 2 { ok = 0; exit }
+        {
+            d = $1 - $2
+            if (d < 0) d = -d
+            if (d > tol) { ok = 0; exit }
+        }
+        END { exit (ok ? 0 : 1) }
+    '
+}
+
 compare_pairs() {
     local l1="$1" d1="$2" l2="$3" d2="$4"
     local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
@@ -175,30 +197,10 @@ compare_pairs() {
 
     if [ "$ENABLE_DUMP" = true ]; then
         if [ -f "$d1" ] && [ -f "$d2" ]; then
-            if cmp -s "$d1" "$d2"; then
-                echo "  [OK] Dump Files: IDENTICAL (Byte-for-byte)"
+            if dump_matches_tolerance "$d1" "$d2"; then
+                echo "  [OK] Dump Files: VALIDATED (all elements differ by <= $TOLERANCE)"
             else
-                local dump_check
-                dump_check=$(awk -v tol="$TOLERANCE" -v f2="$d2" '
-                {
-                    v1 = $1;
-                    if ((getline v2 < f2) <= 0) { print "FAIL_LENGTH"; exit 1 }
-                    d = v1 - v2; 
-                    if (d < 0) d = -d;
-                    if (d > tol) { print "FAIL_TOLERANCE"; exit 1 }
-                }
-                END {
-                    if ((getline v2 < f2) > 0) { print "FAIL_LENGTH"; exit 1 }
-                    print "PASS"
-                }' "$d1")
-
-                if [ "$dump_check" == "PASS" ]; then
-                    echo "  [OK] Dump Files: VALIDATED (Tutti gli elementi rientrano in <= $TOLERANCE)"
-                elif [ "$dump_check" == "FAIL_LENGTH" ]; then
-                    echo "  [ERROR] Dump Files: DIFFER IN LENGTH!"
-                else
-                    echo "  [ERROR] Dump Files: OUT OF TOLERANCE!"
-                fi
+                echo "  [ERROR] Dump Files: OUT OF TOLERANCE!"
             fi
         else
             echo "  [WARN] Dump Files: NOT FOUND for comparison"
@@ -277,22 +279,34 @@ echo " OVERALL TIMING SUMMARY & CSV EXPORT"
 echo "=========================================================="
 
 # Creazione dell'intestazione del file CSV
-echo "Implementation,Computation_Time_s,Checksum,Rayleigh" > "$CSV_OUTPUT"
+echo "Implementation,Computation_Time_s,Checksum,Rayleigh,Same_Dump" > "$CSV_OUTPUT"
 
 for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     label="${ALL_LABELS[i]}"
     t_var="${label}_TIME"
     chk_var="${label}_CHK"
     ray_var="${label}_RAY"
-    
+    dump_file="${ALL_DUMPS[i]:-}"
+
     t_val="${!t_var:-N/A}"
     chk_val="${!chk_var:-N/A}"
     ray_val="${!ray_var:-N/A}"
 
+    same_dump=1
+    for other_dump in "${ALL_DUMPS[@]}"; do
+        if [ "$other_dump" = "$dump_file" ]; then
+            continue
+        fi
+        if [ ! -f "$dump_file" ] || [ ! -f "$other_dump" ] || ! dump_matches_tolerance "$dump_file" "$other_dump"; then
+            same_dump=0
+            break
+        fi
+    done
+
     printf "  %-15s %10s s\n" "$label" "$t_val"
-    
+
     # Scrittura della riga nel CSV
-    echo "$label,$t_val,$chk_val,$ray_val" >> "$CSV_OUTPUT"
+    echo "$label,$t_val,$chk_val,$ray_val,$same_dump" >> "$CSV_OUTPUT"
 done
 
 echo "=========================================================="
