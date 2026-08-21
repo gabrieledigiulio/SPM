@@ -26,7 +26,7 @@ MODE="irregular"
 SEED=111
 
 # Topologia Hardware Fissata (La configurazione vincente dallo sweep MPI)
-THREADS=16
+THREADS=32
 MPI_NODES=8
 MPI_RANKS=8
 
@@ -36,7 +36,7 @@ BLOCK_SIZES=(256 512 1024 2048 4096 8192 16384)
 # Configurazione Output
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
-CSV_OUTPUT="${RESULT_DIR}/granularity_sweep_results.csv"
+CSV_OUTPUT="${RESULT_DIR}/granularity_results_32threads.csv"
 
 # ==========================================
 # 2. Extraction Functions
