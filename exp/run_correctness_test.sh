@@ -279,7 +279,11 @@ echo " OVERALL TIMING SUMMARY & CSV EXPORT"
 echo "=========================================================="
 
 # Creazione dell'intestazione del file CSV
-echo "Implementation,Computation_Time_s,Checksum,Rayleigh,Same_Dump" > "$CSV_OUTPUT"
+if [ "$ENABLE_DUMP" = true ]; then
+    echo "Implementation,Computation_Time_s,Checksum,Rayleigh,Same_Dump" > "$CSV_OUTPUT"
+else
+    echo "Implementation,Computation_Time_s,Checksum,Rayleigh" > "$CSV_OUTPUT"
+fi
 
 for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     label="${ALL_LABELS[i]}"
@@ -293,25 +297,30 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     ray_val="${!ray_var:-N/A}"
 
     same_dump=1
-    for other_dump in "${ALL_DUMPS[@]}"; do
-        if [ "$other_dump" = "$dump_file" ]; then
+    if [ "$ENABLE_DUMP" = true ]; then
+        for other_dump in "${ALL_DUMPS[@]}"; do
+            if [ "$other_dump" = "$dump_file" ]; then
+                continue
+            fi
+            if [ ! -f "$dump_file" ] || [ ! -f "$other_dump" ] || ! dump_matches_tolerance "$dump_file" "$other_dump"; then
+                same_dump=0
+                break
+            fi
+        done
+
+        if [ "$same_dump" -eq 0 ]; then
+            echo "  [SKIP] $label: dump comparison failed, row not saved to CSV"
             continue
         fi
-        if [ ! -f "$dump_file" ] || [ ! -f "$other_dump" ] || ! dump_matches_tolerance "$dump_file" "$other_dump"; then
-            same_dump=0
-            break
-        fi
-    done
-
-    if [ "$ENABLE_DUMP" = true ] && [ "$same_dump" -eq 0 ]; then
-        echo "  [SKIP] $label: dump comparison failed, row not saved to CSV"
-        continue
     fi
 
     printf "  %-15s %10s s\n" "$label" "$t_val"
 
-    # Scrittura della riga nel CSV
-    echo "$label,$t_val,$chk_val,$ray_val,$same_dump" >> "$CSV_OUTPUT"
+    if [ "$ENABLE_DUMP" = true ]; then
+        echo "$label,$t_val,$chk_val,$ray_val,$same_dump" >> "$CSV_OUTPUT"
+    else
+        echo "$label,$t_val,$chk_val,$ray_val" >> "$CSV_OUTPUT"
+    fi
 done
 
 echo "=========================================================="
