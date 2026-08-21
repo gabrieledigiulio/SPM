@@ -21,8 +21,8 @@ export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
 # Problem Parameters (Small size for fast testing & dumping)
-N=1000
-NZ=25000
+N=1000000
+NZ=25000000
 MODE="irregular"
 SEED=111
 
@@ -49,7 +49,7 @@ TOLERANCE="1e-12"
 # Vector dump control
 ENABLE_DUMP=true
 SEQ_DUMP_FILE="seq_vec.dump"
-RESULT_DIR="result"
+RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
 CSV_OUTPUT="${RESULT_DIR}/cross_validation_results.csv"
 
