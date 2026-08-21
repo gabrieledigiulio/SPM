@@ -21,8 +21,8 @@ export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
 # Problem Parameters (Small size for fast testing & dumping)
-N=1000000
-NZ=250000000
+N=1000
+NZ=250000
 MODE="irregular"
 SEED=111
 
@@ -47,7 +47,7 @@ MPI_NORM_CHUNK=2048
 TOLERANCE="1e-12"
 
 # Vector dump control
-ENABLE_DUMP=false
+ENABLE_DUMP=true
 SEQ_DUMP_FILE="seq_vec.dump"
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
