@@ -30,12 +30,12 @@ MPI_RANKS=8
 
 # Parametri dello Sweep
 SPMV_CHUNK=1024
-NORM_CHUNKS=(64 256 1024 4096 16384 65536 262144)
+NORM_CHUNKS=(1024 65536)
 REPEATS=3
 
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
-CSV_OUTPUT="${RESULT_DIR}/norm_granularity_results_16threads_medians.csv"
+CSV_OUTPUT="${RESULT_DIR}/norm_granularity_results_16threads.csv"
 
 # ==========================================
 # 2. Extraction & Math Functions
