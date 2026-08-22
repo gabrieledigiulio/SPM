@@ -8,7 +8,7 @@ set -euo pipefail
 # ==========================================
 # 1. Test Parameter Configuration
 # ==========================================
-SEQ_BIN="../sequential_SpMV"
+SEQ_BIN="../iterative_SpMV"
 
 # Tempo generoso: 1 core impiegherà molto di più rispetto a 16 core!
 SRUN_TIME="00:30:00" 
