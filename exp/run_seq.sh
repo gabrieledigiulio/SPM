@@ -11,7 +11,7 @@ set -euo pipefail
 SEQ_BIN="../sequential_SpMV"
 
 # Tempo generoso: 1 core impiegherà molto di più rispetto a 16 core!
-SRUN_TIME="01:00:00" 
+SRUN_TIME="00:30:00" 
 
 # Problem Parameters (Fissi per tutto il progetto)
 N=1000000
@@ -19,7 +19,7 @@ NZ=250000000
 MODE="irregular"
 SEED=111
 
-REPEATS=3
+REPEATS=1
 
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
