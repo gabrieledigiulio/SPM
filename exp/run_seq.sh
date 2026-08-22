@@ -19,7 +19,7 @@ NZ=250000000
 MODE="irregular"
 SEED=111
 
-REPEATS=1
+REPEATS=3
 
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
