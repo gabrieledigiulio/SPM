@@ -24,7 +24,7 @@ SEED=111
 # Topologia Hardware Ottimizzata
 THREADS=16
 SPMV_CHUNK=1024
-NORM_CHUNK=65536
+NORM_CHUNK=16384
 
 # Parametri dello Sweep di Scalabilità
 NODES_LIST=(1 2 4 8)
