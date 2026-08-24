@@ -8,9 +8,9 @@ set -euo pipefail
 # ==========================================
 # 1. Test Parameter Configuration
 # ==========================================
-PTH_BIN="../pthreads_SpMV"
-OMP_BIN="../omp_tasks_SpMV" # Cambia in "../omp_SpMV" se il nome è diverso
-MPI_BIN="../mpi_omp_tasks_SpMV"
+CPPTHREADS_BIN="../threadpool_SpMV"
+OMP_TASKS_BIN="../omp_tasks_SpMV"
+MPI_OMP_BIN="../mpi_omp_tasks_SpMV"
 
 SRUN_TIME="00:15:00"
 
@@ -93,7 +93,7 @@ for MODE in "${MODES[@]}"; do
     tot_pth=()
     comp_pth=()
     for r in $(seq 1 "$REPEATS"); do
-        out=$(srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$PTH_BIN" \
+        out=$(srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$CPPTHREADS_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
         tot_pth+=($(echo "$out" | extract_tot_time))
         comp_pth+=($(echo "$out" | extract_comp_time))
@@ -109,7 +109,7 @@ for MODE in "${MODES[@]}"; do
     tot_omp=()
     comp_omp=()
     for r in $(seq 1 "$REPEATS"); do
-        out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$OMP_BIN" \
+        out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$OMP_TASKS_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
         tot_omp+=($(echo "$out" | extract_tot_time))
         comp_omp+=($(echo "$out" | extract_comp_time))
@@ -125,7 +125,7 @@ for MODE in "${MODES[@]}"; do
     tot_mpi=()
     comp_mpi=()
     for r in $(seq 1 "$REPEATS"); do
-        out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_NODES" -c "$THREADS" "$MPI_BIN" \
+        out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_NODES" -c "$THREADS" "$MPI_OMP_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
         tot_mpi+=($(echo "$out" | extract_tot_time))
         comp_mpi+=($(echo "$out" | extract_comp_time))
