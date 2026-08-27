@@ -240,9 +240,9 @@ int main(int argc, char** argv) {
         !read_arg_u64(argc, argv, "-c", chunk_size) ||
         !read_arg_u64(argc, argv, "-nc", norm_chunk_arg)) {
 
-        std::cerr << "Usage: " << argv[0]
-                  << " -n N -nz K -m regular|irregular -t THREADS -c CHUNK_SIZE -nc NORM_CHUNK_SIZE [-s SEED] [--dump-vector FILE]\n";
+        usage(argv[0]); // Chiamata alla tua funzione in utils.hpp!
         return 1;
+    }
     }
 
     (void)read_arg_u64(argc, argv, "-s", seed);
