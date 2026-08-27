@@ -197,9 +197,9 @@ iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
     *final_vector = std::move(x);
   }
 
-  timers.total_sec = get_elapsed_time(t_start_total);
-
-  return SeqIterativeResult{result, timers};
+    timers.total_sec = get_elapsed_time(t_start_total);
+    timers.computation_sec = timers.spmv_sec + timers.vector_ops_sec + timers.epoch_transition_sec;
+    return SeqIterativeResult{result, timers};
 }
 
 int main(int argc, char **argv) {
@@ -240,7 +240,6 @@ int main(int argc, char **argv) {
     SeqIterativeResult out =
         iterative_spmv_evolving(G.A, seed, final_vector_out);
 
-    out.timers.computation_sec = out.timers.total_sec; // For sequential, comp is total
     print_all_timers(out.timers);
 
     std::cout << std::setprecision(15);

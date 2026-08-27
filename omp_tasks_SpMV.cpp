@@ -216,6 +216,7 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
     } 
 
     timers.total_sec = get_elapsed_time(t_start_total);
+    timers.computation_sec = timers.spmv_sec + timers.vector_ops_sec + timers.epoch_transition_sec;
     return OmpIterativeResult{result, timers};
 }
 
@@ -271,7 +272,6 @@ int main(int argc, char** argv) {
         OmpIterativeResult out = iterative_spmv_evolving(
             G.A, seed, num_threads, chunk_size, norm_chunk_size, final_vector_out);
 
-        out.timers.computation_sec = out.timers.total_sec; // Compute sec = total sec here
         print_all_timers(out.timers);
 
         std::cout << std::setprecision(15);
