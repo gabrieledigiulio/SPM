@@ -8,7 +8,7 @@ SEP=$(printf '=%.0s' {1..58})
 # ==========================================
 OMP_TASKS_BIN="../omp_tasks_SpMV"
 OMP_WORK_BIN="../omp_worksharing_SpMV"
-SRUN_TIME="00:15:00"
+SRUN_TIME="00:30:00"
 
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
