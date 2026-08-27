@@ -24,7 +24,7 @@ SPMV_CHUNK=1024
 NORM_CHUNK=16384
 
 # Variabile dipendente: scaling dei thread all'interno del nodo
-THREAD_LIST=(4)
+THREAD_LIST=(2)
 REPEATS=3
 
 RESULT_DIR="results"
