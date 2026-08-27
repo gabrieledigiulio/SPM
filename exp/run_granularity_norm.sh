@@ -78,7 +78,7 @@ echo "  CPP Threads:          $CPP_THREADS"
 echo "  OMP Threads:          $OMP_THREADS"
 echo "  MPI Threads:          $MPI_THREADS"
 echo "  MPI Topology:         $MPI_NODES Nodes, $MPI_RANKS Ranks"
-echo "  SpMV Chunk Size:      $SPMV_CHUNK (Fixed)"
+echo "  SpMV Chunk Size:      $SPMV_CHUNK"
 echo "  Norm Chunk Sizes:     ${NORM_CHUNKS[*]}"
 echo "$SEP"
 

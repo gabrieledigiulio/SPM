@@ -23,13 +23,7 @@
 static constexpr std::uint32_t NUM_ITERS = 500;
 static constexpr std::uint32_t EPOCH_LEN = 25;
 
-struct ExecutionTimers {
-    double init_sec              = 0.0;
-    double spmv_sec              = 0.0;
-    double vector_ops_sec        = 0.0;
-    double epoch_transition_sec  = 0.0;
-    double total_sec             = 0.0;
-};
+
 
 struct IterativeResult {
     double rayleigh             = 0.0;
@@ -45,10 +39,6 @@ struct ThreadPoolIterativeResult {
 // ==========================================
 // 2. HELPER TIMER
 // ==========================================
-static double get_elapsed(const std::chrono::steady_clock::time_point& start) {
-    auto end = std::chrono::steady_clock::now();
-    return std::chrono::duration<double>(end - start).count();
-}
 
 // ==========================================
 // 3. OPERAZIONI VETTORIALI
@@ -177,57 +167,57 @@ static ThreadPoolIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
     std::vector<double> x(n);
     std::vector<double> y(n);
 
-    const auto t_start_total = std::chrono::steady_clock::now();
+    const auto t_start_total = get_time_now();
 
     // Fase 1: Inizializzazione (RNG + normalizzazione)
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = get_time_now();
     SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
     for (double& v : x) {
         v = rng.next_unit();
     }
     normalize_parallel(x, pool, norm_chunk_size); 
-    timers.init_sec = get_elapsed(t0);
+    timers.init_sec = get_elapsed_time(t0);
 
     std::size_t row_shift = 0;
 
     // Fase 2: Iterazioni
     for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
         if (iter > 0 && (iter % EPOCH_LEN) == 0) {
-            t0 = std::chrono::steady_clock::now();
+            t0 = get_time_now();
             row_shift = (row_shift + shift_rows) % n;
-            timers.epoch_transition_sec += get_elapsed(t0);
+            timers.epoch_transition_sec += get_elapsed_time(t0);
         }
 
-        t0 = std::chrono::steady_clock::now();
+        t0 = get_time_now();
         spmv_csr_shifted_rows_parallel(A, row_shift, x, y, pool, chunk_size);
-        timers.spmv_sec += get_elapsed(t0);
+        timers.spmv_sec += get_elapsed_time(t0);
 
-        t0 = std::chrono::steady_clock::now();
+        t0 = get_time_now();
         normalize_parallel(y, pool, norm_chunk_size);
-        timers.vector_ops_sec += get_elapsed(t0);
+        timers.vector_ops_sec += get_elapsed_time(t0);
 
         x.swap(y);
     }
 
     // Fase 3: Diagnostica
-    t0 = std::chrono::steady_clock::now();
+    t0 = get_time_now();
     spmv_csr_shifted_rows_parallel(A, row_shift, x, y, pool, chunk_size);
-    timers.spmv_sec += get_elapsed(t0);
+    timers.spmv_sec += get_elapsed_time(t0);
 
-    t0 = std::chrono::steady_clock::now();
+    t0 = get_time_now();
     result.rayleigh = dot_parallel(x, y, pool, norm_chunk_size); 
-    timers.vector_ops_sec += get_elapsed(t0);
+    timers.vector_ops_sec += get_elapsed_time(t0);
 
-    t0 = std::chrono::steady_clock::now();
+    t0 = get_time_now();
     result.checksum = checksum_vector(x);
-    timers.vector_ops_sec += get_elapsed(t0);
+    timers.vector_ops_sec += get_elapsed_time(t0);
     result.final_row_shift = row_shift;
 
     if (final_vector != nullptr) {
         *final_vector = std::move(x);
     }
 
-    timers.total_sec = get_elapsed(t_start_total);
+    timers.total_sec = get_elapsed_time(t_start_total);
     
     return ThreadPoolIterativeResult{result, timers};
 }
@@ -270,9 +260,9 @@ int main(int argc, char** argv) {
     std::cout << "SpMV Chunk Size: " << chunk_size << " | Norm Chunk Size: " << norm_chunk_size << "\n";
 
     try {
-        auto tg0 = std::chrono::steady_clock::now();
+        auto tg0 = get_time_now();
         const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
-        const double generation_sec = get_elapsed(tg0);
+        const double generation_sec = get_elapsed_time(tg0);
 
         print_matrix_stats(G);
         std::cout << "generation_time_sec=" << generation_sec << "\n\n";
@@ -282,21 +272,15 @@ int main(int argc, char** argv) {
 
         ThreadPool pool(num_threads);
 
-        const ThreadPoolIterativeResult out = iterative_spmv_evolving(
+        ThreadPoolIterativeResult out = iterative_spmv_evolving(
             G.A, seed, pool, chunk_size, norm_chunk_size, final_vector_out);
 
-        std::cout << "Time breakdown (seconds):\n";
-        std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
-        std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
-        std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
-        std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
+        out.timers.computation_sec = out.timers.total_sec; // Compute sec = total sec here
+        print_all_timers(out.timers);
 
         std::cout << std::setprecision(15);
         std::cout << "rayleigh=" << out.result.rayleigh << "\n";
         std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec << "\n";
-
-        std::cout << std::fixed << std::setprecision(6);
-        std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
 
         if (!dump_vector_path.empty()) {
             dump_vector(dump_vector_path, final_vector);

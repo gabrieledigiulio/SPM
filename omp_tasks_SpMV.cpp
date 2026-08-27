@@ -24,13 +24,7 @@
 static constexpr std::uint32_t NUM_ITERS = 500;
 static constexpr std::uint32_t EPOCH_LEN = 25;
 
-struct ExecutionTimers {
-    double init_sec              = 0.0;
-    double spmv_sec              = 0.0;
-    double vector_ops_sec        = 0.0;
-    double epoch_transition_sec  = 0.0;
-    double total_sec             = 0.0;
-};
+
 
 struct IterativeResult {
     double rayleigh             = 0.0;
@@ -159,7 +153,7 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
     std::vector<double> x(n);
     std::vector<double> y(n);
 
-    const double t_start_total = omp_get_wtime();
+    const auto t_start_total = get_time_now();
 
     std::size_t row_shift = 0;
 
@@ -170,49 +164,49 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
         #pragma omp single
         {
             // Fase 1: Init (RNG + normalizzazione iniziale)
-            const double t_init0 = omp_get_wtime();
+            auto t_init0 = get_time_now();
             SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
             for (double& v : x) {
                 v = rng.next_unit();
             }
             normalize_omp_tasks(x, norm_chunk_size);
-            timers.init_sec = omp_get_wtime() - t_init0;
+            timers.init_sec = get_elapsed_time(t_init0);
 
             // Fase 2: iterazioni sulla matrice evolvente.
             for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
                 if (iter > 0 && (iter % EPOCH_LEN) == 0) {
-                    const double t_ep0 = omp_get_wtime();
+                    auto t_ep0 = get_time_now();
                     row_shift = (row_shift + shift_rows) % n;
-                    timers.epoch_transition_sec += omp_get_wtime() - t_ep0;
+                    timers.epoch_transition_sec += get_elapsed_time(t_ep0);
                 }
 
                 // SpMV
-                const double t_spmv0 = omp_get_wtime();
+                auto t_spmv0 = get_time_now();
                 spmv_omp_tasks(A, row_shift, x, y, chunk_size);
                 #pragma omp taskwait
-                timers.spmv_sec += omp_get_wtime() - t_spmv0;
+                timers.spmv_sec += get_elapsed_time(t_spmv0);
 
                 // Normalizzazione
-                const double t_vec0 = omp_get_wtime();
+                auto t_vec0 = get_time_now();
                 normalize_omp_tasks(y, norm_chunk_size);
-                timers.vector_ops_sec += omp_get_wtime() - t_vec0;
+                timers.vector_ops_sec += get_elapsed_time(t_vec0);
 
                 x.swap(y);
             }
 
             // Fase 3: diagnostica finale.
-            const double t_spmv_final = omp_get_wtime();
+            auto t_spmv_final = get_time_now();
             spmv_omp_tasks(A, row_shift, x, y, chunk_size);
             #pragma omp taskwait
-            timers.spmv_sec += omp_get_wtime() - t_spmv_final;
+            timers.spmv_sec += get_elapsed_time(t_spmv_final);
 
-            const double t_vec_final = omp_get_wtime();
+            auto t_vec_final = get_time_now();
             result.rayleigh = dot_omp_tasks(x, y, norm_chunk_size);
-            timers.vector_ops_sec += omp_get_wtime() - t_vec_final;
+            timers.vector_ops_sec += get_elapsed_time(t_vec_final);
             
-            const double t_chk0 = omp_get_wtime();
+            auto t_chk0 = get_time_now();
             result.checksum = checksum_vector(x);
-            timers.vector_ops_sec += omp_get_wtime() - t_chk0;
+            timers.vector_ops_sec += get_elapsed_time(t_chk0);
             result.final_row_shift = row_shift;
 
             if (final_vector != nullptr) {
@@ -221,7 +215,7 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
         } 
     } 
 
-    timers.total_sec = omp_get_wtime() - t_start_total;
+    timers.total_sec = get_elapsed_time(t_start_total);
     return OmpIterativeResult{result, timers};
 }
 
@@ -264,9 +258,9 @@ int main(int argc, char** argv) {
     std::cout << "SpMV Chunk Size: " << chunk_size << " | Norm Chunk Size: " << norm_chunk_size << "\n";
 
     try {
-        const double tg0 = omp_get_wtime();
+        auto tg0 = get_time_now();
         const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
-        const double generation_sec = omp_get_wtime() - tg0;
+        const double generation_sec = get_elapsed_time(tg0);
 
         print_matrix_stats(G);
         std::cout << "generation_time_sec=" << generation_sec << "\n\n";
@@ -274,21 +268,15 @@ int main(int argc, char** argv) {
         std::vector<double>  final_vector;
         std::vector<double>* final_vector_out = dump_vector_path.empty() ? nullptr : &final_vector;
 
-        const OmpIterativeResult out = iterative_spmv_evolving(
+        OmpIterativeResult out = iterative_spmv_evolving(
             G.A, seed, num_threads, chunk_size, norm_chunk_size, final_vector_out);
 
-        std::cout << "Time breakdown (seconds):\n";
-        std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
-        std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
-        std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
-        std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
+        out.timers.computation_sec = out.timers.total_sec; // Compute sec = total sec here
+        print_all_timers(out.timers);
 
         std::cout << std::setprecision(15);
         std::cout << "rayleigh=" << out.result.rayleigh << "\n";
         std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec << "\n";
-
-        std::cout << std::fixed << std::setprecision(6);
-        std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
 
         if (!dump_vector_path.empty()) {
             dump_vector(dump_vector_path, final_vector);

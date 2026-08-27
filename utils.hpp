@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <chrono>
 
 // Deterministic PRNG / mixing
 
@@ -130,4 +131,44 @@ static void usage(const char *prog) {
   std::cerr << "  -s   Optional seed, default 111\n"
             << "  --dump-vector FILE\n"
             << "       Optional output file for the final normalized vector\n";
+}
+
+struct ExecutionTimers {
+    double init_sec = 0.0;
+    double computation_sec = 0.0;     
+    double spmv_sec = 0.0;            
+    double vector_ops_sec = 0.0;      
+    double epoch_transition_sec = 0.0;
+    double scatter_sec = 0.0;         
+    double reduction_sec = 0.0;       
+    double communication_sec = 0.0;   
+    double total_sec = 0.0;           
+};
+
+inline std::chrono::steady_clock::time_point get_time_now() {
+    return std::chrono::steady_clock::now();
+}
+
+inline double get_elapsed_time(const std::chrono::steady_clock::time_point& start) {
+    auto end = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(end - start).count();
+}
+
+inline void print_timer(const char* label, double value) {
+    if (value > 0.0) {
+        std::cout << "  " << label << " = " << value << "\n";
+    }
+}
+
+inline void print_all_timers(const ExecutionTimers& t) {
+    std::cout << "Time breakdown (seconds):\n";
+    print_timer("Init time (sec)", t.init_sec);
+    print_timer("Computation time (sec)", t.computation_sec);
+    print_timer("SpMV time (sec)", t.spmv_sec);
+    print_timer("Vector ops time (sec)", t.vector_ops_sec);
+    print_timer("Scatter time (sec)", t.scatter_sec);
+    print_timer("Reduction time (sec)", t.reduction_sec);
+    print_timer("Communication time (sec)", t.communication_sec);
+    print_timer("Epoch transition (sec)", t.epoch_transition_sec);
+    std::cout << "Time (sec) = " << t.total_sec << "\n";
 }

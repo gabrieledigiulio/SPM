@@ -461,18 +461,7 @@ static void apply_shift_permutation_omp_tasks(const std::vector<double>& y_phys_
 // accidentale prima della prima misura restituisce 0.0, non un valore
 // indeterminato). Accumulati (+=) dal thread "single": nessuna
 // sincronizzazione necessaria, un solo thread li tocca.
-struct ExecutionTimers {
-    double init_sec              = 0.0; // init di x + normalizzazione iniziale (fuori dal loop)
-    double local_computation_sec = 0.0; // spmv locale + dot/scale locali + permutazione (mai comunicazione)
-    double spmv_sec              = 0.0;
-    double dot_sec               = 0.0;
-    double scale_sec             = 0.0;
-    double scatter_sec           = 0.0;
-    double reduction_sec         = 0.0; // MPI_Allreduce (norma, scalare 8 byte)
-    double communication_sec     = 0.0; // MPI_Allgatherv (vettore, n*8 byte)
-    double epoch_transition_sec  = 0.0; // aggiornamento di row_shift (atteso ~0, lo misuriamo per dimostrarlo)
-    double total_sec             = 0.0; // l'intera funzione: init + loop + fase diagnostica finale
-};
+
 
 struct IterativeResult {
     double rayleigh             = 0.0;
@@ -566,15 +555,15 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 spmv_local_omp_tasks(L, x_full, y_phys, chunk_size);
                 #pragma omp taskwait
                 const double spmv_elapsed = MPI_Wtime() - tc0;
-                timers.local_computation_sec += spmv_elapsed;
+                timers.computation_sec += spmv_elapsed;
                 timers.spmv_sec += spmv_elapsed;
 
                 // (b) Somma dei quadrati locale (sulla propria fetta fisica).
                 const double tc1 = MPI_Wtime();
                 const double sumsq_local = local_dot_omp_tasks(y_phys, y_phys, 0, L.num_rows, norm_chunk_size);
                 const double dot_elapsed = MPI_Wtime() - tc1;
-                timers.local_computation_sec += dot_elapsed;
-                timers.dot_sec += dot_elapsed;
+                timers.computation_sec += dot_elapsed;
+                timers.vector_ops_sec += dot_elapsed;
 
                 // (c) Allreduce globale: comunicazione minuscola, un solo double.
                 double sumsq_global = 0.0;
@@ -589,8 +578,8 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 const double tc2 = MPI_Wtime();
                 local_scale_omp_tasks(y_phys, 0, L.num_rows, inv, norm_chunk_size);
                 const double scale_elapsed = MPI_Wtime() - tc2;
-                timers.local_computation_sec += scale_elapsed;
-                timers.scale_sec += scale_elapsed;
+                timers.computation_sec += scale_elapsed;
+                timers.vector_ops_sec += scale_elapsed;
 
                 // (e) Allgatherv: assembla il vettore fisico completo.
                 const double tcm0 = MPI_Wtime();
@@ -602,7 +591,7 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, chunk_size);
                 x_full.swap(x_next);
                 const double scatter_elapsed = MPI_Wtime() - tc3;
-                timers.local_computation_sec += scatter_elapsed;
+                timers.computation_sec += scatter_elapsed;
                 timers.scatter_sec += scatter_elapsed;
             }
 
@@ -619,7 +608,7 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
             spmv_local_omp_tasks(L, x_full, y_phys, chunk_size);
             #pragma omp taskwait
             const double final_spmv_elapsed = MPI_Wtime() - tf0;
-            timers.local_computation_sec += final_spmv_elapsed;
+            timers.computation_sec += final_spmv_elapsed;
             timers.spmv_sec += final_spmv_elapsed;
 
             const double tfc0 = MPI_Wtime();
@@ -634,7 +623,7 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 const double tp0 = MPI_Wtime();
                 apply_shift_permutation_omp_tasks(y_phys_full, x_next, row_shift, n, chunk_size);
                 const double final_scatter_elapsed = MPI_Wtime() - tp0;
-                timers.local_computation_sec += final_scatter_elapsed;
+                timers.computation_sec += final_scatter_elapsed;
                 timers.scatter_sec += final_scatter_elapsed;
                 // x_next ora contiene "y" (logico) = A_shifted * x_full;
                 // x_full resta il vettore finale da riportare (NON swap qui).
@@ -642,13 +631,13 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
                 const double tdot0 = MPI_Wtime();
                 result.rayleigh = local_dot_omp_tasks(x_full, x_next, 0, n, norm_chunk_size);
                 const double final_dot_elapsed = MPI_Wtime() - tdot0;
-                timers.local_computation_sec += final_dot_elapsed;
-                timers.dot_sec += final_dot_elapsed;
+                timers.computation_sec += final_dot_elapsed;
+                timers.vector_ops_sec += final_dot_elapsed;
                 const double tchk0 = MPI_Wtime();
                 result.checksum = checksum_vector(x_full);
                 const double chk_elapsed = MPI_Wtime() - tchk0;
-                timers.local_computation_sec += chk_elapsed;
-                timers.dot_sec += chk_elapsed;
+                timers.computation_sec += chk_elapsed;
+                timers.vector_ops_sec += chk_elapsed;
                 result.final_row_shift = row_shift;
 
                 if (final_vector_out != nullptr) {
@@ -794,16 +783,16 @@ int main(int argc, char** argv) {
                                             norm_chunk_size, final_vector_out);
 
         if (rank == 0) {
-            std::cout << "Time breakdown (seconds, aggregated over " << num_ranks << " ranks):\n";
+            std::cout << "Time breakdown (seconds):\n";
         }
-        reduce_and_print_timer("Computation time (sec)", mpi_result.timers.local_computation_sec, num_ranks, rank);
+        reduce_and_print_timer("Init time (sec)", mpi_result.timers.init_sec, num_ranks, rank);
+        reduce_and_print_timer("Computation time (sec)", mpi_result.timers.computation_sec, num_ranks, rank);
         reduce_and_print_timer("SpMV time (sec)", mpi_result.timers.spmv_sec, num_ranks, rank);
-        reduce_and_print_timer("Vector ops time (sec)", mpi_result.timers.dot_sec + mpi_result.timers.scale_sec, num_ranks, rank);
+        reduce_and_print_timer("Vector ops time (sec)", mpi_result.timers.vector_ops_sec, num_ranks, rank);
         reduce_and_print_timer("Scatter time (sec)", mpi_result.timers.scatter_sec, num_ranks, rank);
         reduce_and_print_timer("Reduction time (sec)", mpi_result.timers.reduction_sec, num_ranks, rank);
         reduce_and_print_timer("Communication time (sec)", mpi_result.timers.communication_sec, num_ranks, rank);
         reduce_and_print_timer("Epoch transition (sec)", mpi_result.timers.epoch_transition_sec, num_ranks, rank);
-        reduce_and_print_timer("Init time (sec)", mpi_result.timers.init_sec, num_ranks, rank);
         const double total_sec_max =
             reduce_and_print_timer("Total time (sec)", mpi_result.timers.total_sec, num_ranks, rank);
 

@@ -67,13 +67,6 @@ static constexpr std::uint32_t EPOCH_LEN = 25;
 // ==========================================
 // 1. STRUTTURE PER TELEMETRIA
 // ==========================================
-struct ExecutionTimers {
-    double init_sec              = 0.0;
-    double spmv_sec              = 0.0;
-    double vector_ops_sec        = 0.0;
-    double epoch_transition_sec  = 0.0;
-    double total_sec             = 0.0;
-};
 
 struct IterativeResult {
   double rayleigh = 0.0;
@@ -86,10 +79,7 @@ struct SeqIterativeResult {
     ExecutionTimers timers;
 };
 
-static double get_elapsed(const std::chrono::steady_clock::time_point& start) {
-    auto end = std::chrono::steady_clock::now();
-    return std::chrono::duration<double>(end - start).count();
-}
+
 
 // ==========================================
 // 2. OPERAZIONI VETTORIALI
@@ -159,55 +149,55 @@ iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
   std::vector<double> x(n);
   std::vector<double> y(n);
 
-  const auto t_start_total = std::chrono::steady_clock::now();
+  const auto t_start_total = get_time_now();
 
   // Fase 1: Inizializzazione (RNG + normalizzazione)
-  auto t0 = std::chrono::steady_clock::now();
+  auto t0 = get_time_now();
   SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
   for (double &v : x) {
     v = rng.next_unit();
   }
   normalize(x);
-  timers.init_sec = get_elapsed(t0);
+  timers.init_sec = get_elapsed_time(t0);
 
   std::size_t row_shift = 0;
 
   for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
     if (iter > 0 && (iter % EPOCH_LEN) == 0) {
-      t0 = std::chrono::steady_clock::now();
+      t0 = get_time_now();
       row_shift = (row_shift + shift_rows) % n;
-      timers.epoch_transition_sec += get_elapsed(t0);
+      timers.epoch_transition_sec += get_elapsed_time(t0);
     }
 
-    t0 = std::chrono::steady_clock::now();
+    t0 = get_time_now();
     spmv_csr_shifted_rows(A, row_shift, x, y);
-    timers.spmv_sec += get_elapsed(t0);
+    timers.spmv_sec += get_elapsed_time(t0);
 
-    t0 = std::chrono::steady_clock::now();
+    t0 = get_time_now();
     normalize(y);
-    timers.vector_ops_sec += get_elapsed(t0);
+    timers.vector_ops_sec += get_elapsed_time(t0);
 
     x.swap(y);
   }
 
-  t0 = std::chrono::steady_clock::now();
+  t0 = get_time_now();
   spmv_csr_shifted_rows(A, row_shift, x, y);
-  timers.spmv_sec += get_elapsed(t0);
+  timers.spmv_sec += get_elapsed_time(t0);
   
-  t0 = std::chrono::steady_clock::now();
+  t0 = get_time_now();
   result.rayleigh = dot(x, y);
-  timers.vector_ops_sec += get_elapsed(t0);
+  timers.vector_ops_sec += get_elapsed_time(t0);
   
-  t0 = std::chrono::steady_clock::now();
+  t0 = get_time_now();
   result.checksum = checksum_vector(x);
-  timers.vector_ops_sec += get_elapsed(t0);
+  timers.vector_ops_sec += get_elapsed_time(t0);
   result.final_row_shift = row_shift;
 
   if (final_vector != nullptr) {
     *final_vector = std::move(x);
   }
 
-  timers.total_sec = get_elapsed(t_start_total);
+  timers.total_sec = get_elapsed_time(t_start_total);
 
   return SeqIterativeResult{result, timers};
 }
@@ -233,9 +223,9 @@ int main(int argc, char **argv) {
   std::cout << "SPARSE_ITERATION_SEQ\n";
 
   try {
-    const auto tg0 = std::chrono::steady_clock::now();
+    const auto tg0 = get_time_now();
     const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
-    const auto tg1 = std::chrono::steady_clock::now();
+    const auto tg1 = get_time_now();
 
     const double generation_sec =
         std::chrono::duration<double>(tg1 - tg0).count();
@@ -247,23 +237,15 @@ int main(int argc, char **argv) {
     std::vector<double> *final_vector_out =
         dump_vector_path.empty() ? nullptr : &final_vector;
 
-    const SeqIterativeResult out =
+    SeqIterativeResult out =
         iterative_spmv_evolving(G.A, seed, final_vector_out);
 
-    std::cout << "Time breakdown (seconds):\n";
-    std::cout << "  SpMV time (sec) = " << out.timers.spmv_sec << "\n";
-    std::cout << "  Vector ops time (sec) = " << out.timers.vector_ops_sec << "\n";
-    std::cout << "  Epoch transition (sec) = " << out.timers.epoch_transition_sec << "\n";
-    std::cout << "  Init time (sec) = " << out.timers.init_sec << "\n";
+    out.timers.computation_sec = out.timers.total_sec; // For sequential, comp is total
+    print_all_timers(out.timers);
 
     std::cout << std::setprecision(15);
-    std::cout << "Computation time (sec) = " << out.timers.total_sec << "\n";
     std::cout << "rayleigh=" << out.result.rayleigh << "\n";
-    std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec
-              << "\n";
-
-    std::cout << std::fixed << std::setprecision(6);
-    std::cout << "Time (sec) = " << out.timers.total_sec << "\n";
+    std::cout << "checksum=0x" << std::hex << out.result.checksum << std::dec << "\n";
 
     if (!dump_vector_path.empty()) {
       dump_vector(dump_vector_path, final_vector);
