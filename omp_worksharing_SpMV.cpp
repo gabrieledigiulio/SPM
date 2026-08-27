@@ -225,6 +225,9 @@ static OmpIterativeResult iterative_spmv_evolving(const CSRMatrix& A,
 // ==========================================
 // 5. MAIN (identico alla versione a task)
 // ==========================================
+// ==========================================
+// 5. MAIN (identico alla versione a task)
+// ==========================================
 int main(int argc, char** argv) {
     std::uint64_t n64  = 0;
     std::uint64_t nz   = 0;
@@ -240,10 +243,9 @@ int main(int argc, char** argv) {
         !read_arg_u64(argc, argv, "-c", chunk_size) ||
         !read_arg_u64(argc, argv, "-nc", norm_chunk_arg)) {
 
-        usage(argv[0]); // Chiamata alla tua funzione in utils.hpp!
+        usage(argv[0]);
         return 1;
-    }
-    }
+    } // <--- L'ERRORE ERA QUI: probabilmente avevi un'altra } subito sotto!
 
     (void)read_arg_u64(argc, argv, "-s", seed);
     (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
