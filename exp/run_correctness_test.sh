@@ -1,76 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ==============================================================================
-# SPM "One-Shot" Project - Cross-Validation & Timing Script (Slurm/srun style)
-# ==============================================================================
+SEP=$(printf '=%.0s' {1..58})
 
-# ==========================================
-# 1. Test Parameter Configuration
-# ==========================================
 SEQ_BIN="../iterative_SpMV"
 CPPTHREADS_BIN="../threadpool_SpMV"
 OMP_TASKS_BIN="../omp_tasks_SpMV"
 MPI_OMP_BIN="../mpi_omp_tasks_SpMV"
 
-# Tempo massimo per ogni singola chiamata srun
 SRUN_TIME="00:15:00"
 
-# Affinity dei thread OpenMP (coerente su tutte le run)
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
-# Problem Parameters (Small size for fast testing & dumping)
 N=1000000
 NZ=250000000
 MODE="irregular"
 SEED=111
 
-# --- Parametri per C++ Threads ---
 CPP_THREADS=16
 CPP_CHUNK=2048
 CPP_NORM_CHUNK=2048
 
-# --- Parametri per OpenMP Tasks ---
 OMP_THREADS=16
 OMP_CHUNK=2048
 OMP_NORM_CHUNK=2048
 
-# --- Parametri per MPI + OpenMP ---
 MPI_NODES=8
 MPI_RANKS=8
-OMP_THREADS_PER_RANK=16
+MPI_THREADS=16
 MPI_CHUNK=2048
 MPI_NORM_CHUNK=2048
 
-# Numerical tolerance per Rayleigh
 TOLERANCE="1e-12"
 
-# Vector dump control
 ENABLE_DUMP=false
 SEQ_DUMP_FILE="seq_vec.dump"
 RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
 CSV_OUTPUT="${RESULT_DIR}/cross_validation_results.csv"
 
-# ==========================================
-# 2. Implementations to Test
-# ==========================================
 IMPLS=(
     "CPP_THREADS|$CPPTHREADS_BIN|thr_vec.dump|$CPP_THREADS|$CPP_CHUNK|$CPP_NORM_CHUNK"
     "OMP_TASKS|$OMP_TASKS_BIN|omp_vec.dump|$OMP_THREADS|$OMP_CHUNK|$OMP_NORM_CHUNK"
 )
 
 MPI_IMPLS=(
-    "MPI_OMP|$MPI_OMP_BIN|mpi_vec.dump|$OMP_THREADS_PER_RANK|$MPI_CHUNK|$MPI_NORM_CHUNK"
+    "MPI_OMP|$MPI_OMP_BIN|mpi_vec.dump|$MPI_THREADS|$MPI_CHUNK|$MPI_NORM_CHUNK"
 )
 
 ALL_LABELS=("SEQ")
 ALL_DUMPS=("$SEQ_DUMP_FILE")
 
-# ==========================================
-# 3. Extraction & Execution Functions
-# ==========================================
 extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_vecops_time() { grep -oP 'Vector ops time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
@@ -126,9 +107,9 @@ run_and_extract_mpi() {
     local label="$1" binary="$2"; shift 2
     local out
 
-    out=$(OMP_NUM_THREADS="$OMP_THREADS_PER_RANK" \
+    out=$(OMP_NUM_THREADS="$MPI_THREADS" \
           srun --time="$SRUN_TIME" --mpi=pmix -N "$MPI_NODES" -n "$MPI_RANKS" \
-               --cpus-per-task="$OMP_THREADS_PER_RANK" "$binary" "$@")
+               --cpus-per-task="$MPI_THREADS" "$binary" "$@")
 
     local comp_time
     comp_time=$(echo "$out" | extract_comp_time)
@@ -208,18 +189,15 @@ compare_pairs() {
     fi
 }
 
-# ==========================================
-# 4. Execution
-# ==========================================
-echo "=========================================================="
-echo " CROSS-VALIDATION CONFIGURATION "
-echo "=========================================================="
+echo "$SEP"
+echo " CROSS-VALIDATION CONFIGURATION"
+echo "$SEP"
 echo "  Matrix (N x NZ):        $N x $NZ"
 echo "  Matrix mode:            $MODE (Seed: $SEED)"
 echo "  Enable Dump:            $ENABLE_DUMP"
 echo "  Numerical Tolerance:    $TOLERANCE"
 echo "  srun time limit/call:   $SRUN_TIME"
-echo "=========================================================="
+echo "$SEP"
 
 DUMP_FLAG=()
 if [ "$ENABLE_DUMP" = true ]; then
@@ -228,7 +206,6 @@ fi
 
 echo "Running SEQ..."
 run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" "${DUMP_FLAG[@]}"
-echo "----------------------------------------------------------"
 
 for entry in "${IMPLS[@]}"; do
     IFS='|' read -r label binary dump_file th chk nchk <<< "$entry"
@@ -241,7 +218,6 @@ for entry in "${IMPLS[@]}"; do
     echo "Running $label (-N 1, -t $th, -c $chk, -nc $nchk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
-    echo "----------------------------------------------------------"
 done
 
 for entry in "${MPI_IMPLS[@]}"; do
@@ -255,15 +231,11 @@ for entry in "${MPI_IMPLS[@]}"; do
     echo "Running $label (-N $MPI_NODES, -n $MPI_RANKS, -t $th, -c $chk, -nc $nchk)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
-    echo "----------------------------------------------------------"
 done
 
-# ==========================================
-# 5. Cross-Validation (Tutti contro Tutti)
-# ==========================================
-echo "=========================================================="
+echo "$SEP"
 echo " CROSS-VALIDATION RESULTS"
-echo "=========================================================="
+echo "$SEP"
 
 for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     for (( j=i+1; j<${#ALL_LABELS[@]}; j++ )); do
@@ -271,14 +243,10 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     done
 done
 
-# ==========================================
-# 6. Overall Timing & CSV Export Summary
-# ==========================================
-echo "=========================================================="
+echo "$SEP"
 echo " OVERALL TIMING SUMMARY & CSV EXPORT"
-echo "=========================================================="
+echo "$SEP"
 
-# Creazione dell'intestazione del file CSV
 if [ "$ENABLE_DUMP" = true ]; then
     echo "Implementation,Computation_Time_s,Checksum,Rayleigh,Same_Dump" > "$CSV_OUTPUT"
 else
@@ -323,6 +291,6 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
     fi
 done
 
-echo "=========================================================="
-echo " Results successfully saved to: $CSV_OUTPUT"
-echo "=========================================================="
+echo "$SEP"
+echo " Results saved to: $CSV_OUTPUT"
+echo "$SEP"

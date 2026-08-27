@@ -91,16 +91,43 @@ static void dump_vector(const std::string &path, const std::vector<double> &x) {
   }
 }
 
-inline void usage(const char *prog) {
+static void usage(const char *prog) {
+  std::string p(prog);
+  bool is_mpi = p.find("mpi") != std::string::npos;
+  bool is_iterative = p.find("iterative") != std::string::npos;
+  bool is_parallel = !is_iterative;
+
   std::cerr
       << "Usage:\n"
       << "  " << prog
-      << " -n N -nz K -m regular|irregular [-s seed] [--dump-vector FILE]\n\n"
-      << "Parameters:\n"
-      << "  -n   Matrix size, NxN\n"
-      << "  -nz  Total number of nonzeros\n"
-      << "  -m   Matrix mode: regular or irregular\n"
-      << "  -s   Optional seed, default 111\n"
-      << "  --dump-vector FILE\n"
-      << "       Optional output file for the final normalized vector\n";
+      << " -n N -nz K -m regular|irregular";
+      
+  if (is_parallel) {
+      if (is_mpi) {
+          std::cerr << " -t THREADS_PER_RANK";
+      } else {
+          std::cerr << " -t THREADS";
+      }
+      std::cerr << " -c CHUNK_SIZE -nc NORM_CHUNK_SIZE";
+  }
+  
+  std::cerr << " [-s seed] [--dump-vector FILE]\n\n"
+            << "Parameters:\n"
+            << "  -n   Matrix size, NxN\n"
+            << "  -nz  Total number of nonzeros\n"
+            << "  -m   Matrix mode: regular or irregular\n";
+            
+  if (is_parallel) {
+      if (is_mpi) {
+          std::cerr << "  -t   Number of OpenMP threads per MPI rank\n";
+      } else {
+          std::cerr << "  -t   Number of working threads\n";
+      }
+      std::cerr << "  -c   Chunk size for SpMV tasks\n"
+                << "  -nc  Chunk size for vector normalization tasks\n";
+  }
+  
+  std::cerr << "  -s   Optional seed, default 111\n"
+            << "  --dump-vector FILE\n"
+            << "       Optional output file for the final normalized vector\n";
 }

@@ -735,8 +735,7 @@ int main(int argc, char** argv) {
 
     if (!args_ok) {
         if (rank == 0) {
-            std::cerr << "Usage: " << argv[0]
-                      << " -n N -nz K -m regular|irregular -t THREADS -c CHUNK_SIZE -nc NORM_CHUNK_SIZE [-s SEED] [--dump-vector FILE]\n";
+            usage(argv[0]);
         }
         MPI_Finalize();
         return 1;
