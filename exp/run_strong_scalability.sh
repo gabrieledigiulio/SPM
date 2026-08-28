@@ -71,12 +71,7 @@ for nodes in "${NODES_LIST[@]}"; do
     echo ">> Nodes=$nodes, MPI Ranks=$nodes"
     echo "$SEP"
 
-    tot_times=()
-    comp_times=()
-    comm_times=()
-    red_times=()
-    scatt_times=()
-    epoch_times=()
+    runs=()
 
     for r in $(seq 1 "$REPEATS"); do
         echo "  [Run $r/$REPEATS]"
@@ -85,23 +80,21 @@ for nodes in "${NODES_LIST[@]}"; do
             --cpus-per-task="$MPI_THREADS" "$MPI_OMP_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" \
             -t "$MPI_THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
 
-        tot_times+=($(echo "$out_mpi" | extract_tot_time))
-        comp_times+=($(echo "$out_mpi" | extract_comp_time))
-        comm_times+=($(echo "$out_mpi" | extract_comm_time))
-        red_times+=($(echo "$out_mpi" | extract_red_time))
-        scatt_times+=($(echo "$out_mpi" | extract_scatt_time))
-        epoch_times+=($(echo "$out_mpi" | extract_epoch_time))
+        t=$(echo "$out_mpi" | extract_tot_time)
+        c=$(echo "$out_mpi" | extract_comp_time)
+        cm=$(echo "$out_mpi" | extract_comm_time)
+        rd=$(echo "$out_mpi" | extract_red_time)
+        sc=$(echo "$out_mpi" | extract_scatt_time)
+        ep=$(echo "$out_mpi" | extract_epoch_time)
+
+        runs+=("$t|$c|$cm|$rd|$sc|$ep")
     done
 
-    m_tot=$(calculate_median "${tot_times[@]}")
-    m_comp=$(calculate_median "${comp_times[@]}")
-    m_comm=$(calculate_median "${comm_times[@]}")
-    m_red=$(calculate_median "${red_times[@]}")
-    m_scatt=$(calculate_median "${scatt_times[@]}")
-    m_epoch=$(calculate_median "${epoch_times[@]}")
+    median_run=$(printf "%s\n" "${runs[@]}" | sort -t'|' -k1,1n | awk -v n="${#runs[@]}" 'NR==int((n+1)/2) { print; exit }')
+    IFS='|' read -r m_tot m_comp m_comm m_red m_scatt m_epoch <<< "$median_run"
 
     echo "$nodes,$m_tot,$m_comp,$m_comm,$m_red,$m_scatt,$m_epoch" >> "$CSV_OUTPUT"
-    echo "  -> MPI_OMP      Medians: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
+    echo "  -> MPI_OMP      Median-run: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
 done
 
 echo "$SEP"
