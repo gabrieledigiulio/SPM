@@ -1,4 +1,4 @@
-Nodes,Total_Ranks,Threads_Per_Rank,Block_Size,Total_Time_Med,Comp_Time_Med,Comm_Time_Med,Red_Time_Med,Epoch_Time_Med,Scatt_Time_Med
+Nodes,Total_Ranks,Threads_Per_Rank,SPMV_Chunck,Total_Time_Med,Comp_Time_Med,Comm_Time_Med,Red_Time_Med,Epoch_Time_Med,Scatt_Time_Med
 8,128,1,2048,20.365091,7.942,12.488,4.126,0.000,6.641
 8,64,2,2048,17.668471,5.897,11.867,6.534,0.000,3.955
 8,32,4,2048,17.008038,3.602,13.699,9.096,0.000,1.854

@@ -22,7 +22,7 @@ MPI_NODES=8
 MPI_RANKS=8
 MPI_THREADS=16
 
-BLOCK_SIZES=(256 512 1024 2048 4096 8192 16384)
+SPMV_CHUNK=(256 512 1024 2048 4096 8192 16384)
 REPEATS=3
 
 RESULT_DIR="results"
@@ -77,14 +77,14 @@ echo "  CPP Threads:          $CPP_THREADS"
 echo "  OMP Threads:          $OMP_THREADS"
 echo "  MPI Threads:          $MPI_THREADS"
 echo "  MPI Topology:         $MPI_NODES Nodes, $MPI_RANKS Ranks"
-echo "  Block Sizes:          ${BLOCK_SIZES[*]}"
+echo "  SPMV Chunck:          ${SPMV_CHUNK[*]}"
 echo "$SEP"
 
-echo "Block_Size,Implementation,Total_Time_Med,Comp_Time_Med,VectorOps_Time_Med,SpMV_Time_Med,Epoch_Time_Med" > "$CSV_OUTPUT"
+echo "SPMV Chunck,Implementation,Total_Time_Med,Comp_Time_Med,VectorOps_Time_Med,SpMV_Time_Med,Epoch_Time_Med" > "$CSV_OUTPUT"
 
-for b in "${BLOCK_SIZES[@]}"; do
+for b in "${SPMV_CHUNK[@]}"; do
     echo "$SEP"
-    echo ">> Block Size=$b"
+    echo ">> SPMV Chunck=$b"
     echo "$SEP"
 
     cpp_tot=(); cpp_comp=(); cpp_vec=(); cpp_spmv=(); cpp_ep=()
