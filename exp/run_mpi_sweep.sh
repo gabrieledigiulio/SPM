@@ -52,7 +52,7 @@ echo "  Cores per Node:       $CORES_PER_NODE"
 echo "  SpMV Chunk Size:      $SPMV_CHUNK"
 echo "$SEP"
 
-for MPI_THREADS in 4 16; do
+for MPI_THREADS in 1 2 4 8 16 32; do
 
     if [ "$MPI_THREADS" -eq 32 ]; then
         RANKS_PER_NODE=1
