@@ -64,9 +64,8 @@ static constexpr std::uint32_t NUM_ITERS = 500;
 // number of iterations between two matrix-evolution steps
 static constexpr std::uint32_t EPOCH_LEN = 25;
 
-// ==========================================
-// 1. STRUTTURE PER TELEMETRIA
-// ==========================================
+
+// collect output data
 
 struct IterativeResult {
   double rayleigh = 0.0;
@@ -80,18 +79,19 @@ struct SeqIterativeResult {
 };
 
 
-
-// ==========================================
-// 2. OPERAZIONI VETTORIALI
-// ==========================================
+// dot product
 
 static double dot(const std::vector<double> &a, const std::vector<double> &b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
+// l2 norm
+
 static double l2_norm(const std::vector<double> &x) {
   return std::sqrt(dot(x, x));
 }
+
+// vectorn normalization
 
 static void normalize(std::vector<double> &x) {
   const double nrm = l2_norm(x);
@@ -102,7 +102,8 @@ static void normalize(std::vector<double> &x) {
   }
 }
 
-// Computes the epoch parameter
+// compute shift 
+
 static std::size_t compute_shift_rows(std::size_t n) {
   std::size_t s = n / 16 + 17;
   if ((s % 2) == 0)
@@ -113,102 +114,127 @@ static std::size_t compute_shift_rows(std::size_t n) {
   return s;
 }
 
-// Per-row SpMV kernel.
+
+// multiplication of the sparse matrix A and the vector x
+// matrix A
+// current shift value row_shift
+// input vector x
+// target vector y
+
 static void spmv_csr_shifted_rows(const CSRMatrix &A, std::size_t row_shift,
                                   const std::vector<double> &x,
                                   std::vector<double> &y) {
-  const std::size_t n = A.n;
-  y.assign(n, 0.0);
+  const std::size_t n = A.n; // takes dim
+  y.assign(n, 0.0); // init full of zeros
 
-  for (std::size_t i = 0; i < n; ++i) {
-    const std::size_t src_row = (i + n - row_shift) % n;
+  for (std::size_t i = 0; i < n; ++i) { // for every rows of y
+    const std::size_t src_row = (i + n - row_shift) % n; // physical row for logical row i after the shift
 
-    double sum = 0.0;
-    for (std::uint64_t p = A.row_ptr[src_row]; p < A.row_ptr[src_row + 1];
+    double sum = 0.0; // init accumulator
+
+    for (std::uint64_t p = A.row_ptr[src_row]; p < A.row_ptr[src_row + 1]; // CSR iter only the nonzeros values
          ++p) {
-      sum += A.values[p] * x[A.col_idx[p]];
+      sum += A.values[p] * x[A.col_idx[p]]; // multiply the nonzeros of the matrix row by the corresponding elements of the vector
     }
 
-    y[i] = sum;
+    y[i] = sum; // save the total in the correct spot
   }
 }
 
-// ==========================================
-// 3. FUNZIONE ITERATIVA
-// ==========================================
+// coordinator
+// the matrix A
+// the seed 
+// optional pointer where the result is to be stored
 
-static SeqIterativeResult
-iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
+static SeqIterativeResult iterative_spmv_evolving(const CSRMatrix &A, std::uint64_t seed,
                         std::vector<double> *final_vector = nullptr) {
+  
+  // creates obj for stats
   ExecutionTimers timers;
   IterativeResult result;
-
-  const std::size_t n = A.n;
-  const std::size_t shift_rows = compute_shift_rows(n);
-
+  
+  const std::size_t n = A.n;  // init dim
+  const std::size_t shift_rows = compute_shift_rows(n); // how many rows to shift per epoch
+  
+  // alloc vec
   std::vector<double> x(n);
   std::vector<double> y(n);
-
+  
+  // start global timer
   const auto t_start_total = get_time_now();
-
-  // Fase 1: Inizializzazione (RNG + normalizzazione)
+  
+  // init vec x with pseudo casual values
   auto t0 = get_time_now();
   SplitMix64 rng(seed ^ 0x123456789abcdef0ULL);
   for (double &v : x) {
     v = rng.next_unit();
   }
+
+  // normalize x
   normalize(x);
+
+  // stop the init timer
   timers.init_sec = get_elapsed_time(t0);
 
+  // init the total displacement offset
   std::size_t row_shift = 0;
 
+  // start the main loop 
   for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
+    // check if matrix need to evolve
     if (iter > 0 && (iter % EPOCH_LEN) == 0) {
       t0 = get_time_now();
-      row_shift = (row_shift + shift_rows) % n;
-      timers.epoch_transition_sec += get_elapsed_time(t0);
+      row_shift = (row_shift + shift_rows) % n; // row shift
+      timers.epoch_transition_sec += get_elapsed_time(t0); 
     }
 
     t0 = get_time_now();
-    spmv_csr_shifted_rows(A, row_shift, x, y);
+    spmv_csr_shifted_rows(A, row_shift, x, y); // call the SPMV 
     timers.spmv_sec += get_elapsed_time(t0);
 
     t0 = get_time_now();
-    normalize(y);
+    normalize(y); // call norm
     timers.vector_ops_sec += get_elapsed_time(t0);
 
-    x.swap(y);
+    x.swap(y); // swap the x vector to y
   }
 
+  // Rayleigh requires multiplying the final vector by the matrix in its current state
   t0 = get_time_now();
   spmv_csr_shifted_rows(A, row_shift, x, y);
   timers.spmv_sec += get_elapsed_time(t0);
-  
+
+  // computes Raylight
   t0 = get_time_now();
   result.rayleigh = dot(x, y);
   timers.vector_ops_sec += get_elapsed_time(t0);
   
+  // computes checksum
   t0 = get_time_now();
   result.checksum = checksum_vector(x);
   timers.vector_ops_sec += get_elapsed_time(t0);
   result.final_row_shift = row_shift;
 
+  // save vec
   if (final_vector != nullptr) {
     *final_vector = std::move(x);
   }
-
+    // stop timers
     timers.total_sec = get_elapsed_time(t_start_total);
     timers.computation_sec = timers.spmv_sec + timers.vector_ops_sec + timers.epoch_transition_sec;
     return SeqIterativeResult{result, timers};
 }
 
 int main(int argc, char **argv) {
+
+  // inti var
   std::uint64_t n64 = 0;
   std::uint64_t nz = 0;
   std::uint64_t seed = 111;
   std::string mode;
   std::string dump_vector_path;
 
+  // check args
   if (!read_arg_u64(argc, argv, "-n", n64) ||
       !read_arg_u64(argc, argv, "-nz", nz) ||
       !read_arg_str(argc, argv, "-m", mode)) {
@@ -216,13 +242,16 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // optional args
   (void)read_arg_u64(argc, argv, "-s", seed);
   (void)read_arg_str(argc, argv, "--dump-vector", dump_vector_path);
 
+  // read input as a wide integer then cast to the native type used for the matrix
   const std::size_t n = static_cast<std::size_t>(n64);
   std::cout << "SPARSE_ITERATION_SEQ\n";
 
   try {
+    // matrix generation
     const auto tg0 = get_time_now();
     const GeneratedMatrix G = generate_matrix(n, nz, seed, mode);
     const auto tg1 = get_time_now();
@@ -233,13 +262,16 @@ int main(int argc, char **argv) {
     print_matrix_stats(G);
     std::cout << "generation_time_sec=" << generation_sec << "\n\n";
 
+    // prepare final_vector_out pointer
     std::vector<double> final_vector;
     std::vector<double> *final_vector_out =
-        dump_vector_path.empty() ? nullptr : &final_vector;
+        dump_vector_path.empty() ? nullptr : &final_vector; //check dump
 
+    // start the func
     SeqIterativeResult out =
         iterative_spmv_evolving(G.A, seed, final_vector_out);
 
+    // print results
     print_all_timers(out.timers);
 
     std::cout << std::setprecision(15);

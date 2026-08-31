@@ -24,7 +24,7 @@ SPMV_CHUNK=1024
 NORM_CHUNK=16384
 
 # Variabile dipendente: scaling dei thread all'interno del nodo
-THREAD_LIST=(2)
+THREAD_LIST=(4 8 16 32)
 REPEATS=3
 
 RESULT_DIR="results"
@@ -86,20 +86,20 @@ for THREADS in "${THREAD_LIST[@]}"; do
     tot_omp_tasks=()
     comp_omp_tasks=()
     spmv_omp_tasks=()
-    
+
     for r in $(seq 1 "$REPEATS"); do
         out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$OMP_TASKS_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
-        
+
         tot_omp_tasks+=($(echo "$out" | extract_tot_time))
         comp_omp_tasks+=($(echo "$out" | extract_comp_time))
         spmv_omp_tasks+=($(echo "$out" | extract_spmv_time))
     done
-    
+
     m_tot_tasks=$(calculate_median "${tot_omp_tasks[@]}")
     m_comp_tasks=$(calculate_median "${comp_omp_tasks[@]}")
     m_spmv_tasks=$(calculate_median "${spmv_omp_tasks[@]}")
-    
+
     echo "$THREADS,OMP_TASKS,$m_tot_tasks,$m_comp_tasks,$m_spmv_tasks" >> "$CSV_OUTPUT"
     echo "     Medians [Tasks]: Tot=${m_tot_tasks}s, Comp=${m_comp_tasks}s"
 
@@ -110,20 +110,20 @@ for THREADS in "${THREAD_LIST[@]}"; do
     tot_omp_work=()
     comp_omp_work=()
     spmv_omp_work=()
-    
+
     for r in $(seq 1 "$REPEATS"); do
         out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$OMP_WORK_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
-        
+
         tot_omp_work+=($(echo "$out" | extract_tot_time))
         comp_omp_work+=($(echo "$out" | extract_comp_time))
         spmv_omp_work+=($(echo "$out" | extract_spmv_time))
     done
-    
+
     m_tot_work=$(calculate_median "${tot_omp_work[@]}")
     m_comp_work=$(calculate_median "${comp_omp_work[@]}")
     m_spmv_work=$(calculate_median "${spmv_omp_work[@]}")
-    
+
     echo "$THREADS,OMP_WORKSHARING,$m_tot_work,$m_comp_work,$m_spmv_work" >> "$CSV_OUTPUT"
     echo "     Medians [Work ]: Tot=${m_tot_work}s, Comp=${m_comp_work}s"
 

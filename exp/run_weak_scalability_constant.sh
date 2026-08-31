@@ -98,7 +98,7 @@ for nodes in "${NODES_LIST[@]}"; do
     IFS='|' read -r m_tot m_comp m_comm m_red m_scatt m_epoch <<< "$median_run"
 
     echo "$nodes,$MATRIX_N,$MATRIX_NZ,$m_tot,$m_comp,$m_comm,$m_red,$m_scatt,$m_epoch" >> "$CSV_OUTPUT"
-    echo "  -> MPI_OMP      Median-run: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
+    echo "  -> Median-run: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
 done
 
 echo "$SEP"
