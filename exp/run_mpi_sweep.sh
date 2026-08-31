@@ -43,7 +43,7 @@ calculate_median() {
 }
 
 echo "$SEP"
-echo " MPI+OpenMP HYBRID SWEEP ($REPEATS REPEATS) - 250M NZ"
+echo " MPI+OpenMP HYBRID SWEEP ($REPEATS REPEATS)"
 echo "$SEP"
 echo "  Matrix (N x NZ):      $N x $NZ"
 echo "  Mode:                 $MODE"
@@ -52,7 +52,7 @@ echo "  Cores per Node:       $CORES_PER_NODE"
 echo "  SpMV Chunk Size:      $SPMV_CHUNK"
 echo "$SEP"
 
-for MPI_THREADS in 1 2 4 8 16 32; do
+for MPI_THREADS in 4 16; do
 
     if [ "$MPI_THREADS" -eq 32 ]; then
         RANKS_PER_NODE=1
