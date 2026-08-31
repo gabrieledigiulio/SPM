@@ -261,15 +261,17 @@ static double local_dot_omp_for(const std::vector<double>& a,
                                 std::size_t begin, std::size_t count,
                                 std::size_t chunk_size) {
 
-    double sum = 0.0; // fresh per call
+    static double sum = 0.0;
 
-    // omp for > divides the loop iterations among the active thread team
-    // reduction(+:sum) > each thread gets a private copy of sum, then all copies are combined
+    #pragma omp single
+    {
+        sum = 0.0;
+    }
+
     #pragma omp for schedule(static, chunk_size) reduction(+:sum)
     for (std::size_t i = 0; i < count; ++i) {
         sum += a[begin + i] * b[begin + i]; // sum element-wise products of this slice
     }
-    // implicit barrier here
     return sum;
 }
 

@@ -112,6 +112,7 @@ for THREADS in "${THREAD_LIST[@]}"; do
     spmv_omp_work=()
 
     for r in $(seq 1 "$REPEATS"); do
+        echo "  [Run $r/$REPEATS]"
         out=$(OMP_NUM_THREADS="$THREADS" srun --time="$SRUN_TIME" -N 1 -n 1 -c "$THREADS" "$OMP_WORK_BIN" \
             -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
 

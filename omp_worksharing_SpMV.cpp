@@ -40,18 +40,17 @@ static double dot_omp_for(const std::vector<double>& a,
                           std::size_t n,
                           std::size_t chunk_size) {
 
-    double sum = 0.0; // fresh per call acc
+    static double sum = 0.0;
+
+    #pragma omp single
+    {
+        sum = 0.0;
+    }
     
-    // for > tells the existing thread team to divide the iterations of this loop among yourselves
-    // schedule(static, chunk_size) > the strategy for assigning iterations to threads
-    // reduction(+:sum) > each thread gets a private copy of sum, initialized to 0
     #pragma omp for schedule(static, chunk_size) reduction(+:sum)
-    // each thread performs this summation only on 
-    // the iterations assigned to it by the schedule
     for (std::size_t i = 0; i < n; ++i) {
         sum += a[i] * b[i]; // sum element-wise products
     }
-    // implicit barrier
     return sum;
 }
 
