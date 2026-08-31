@@ -36,10 +36,7 @@ struct LocalMatrix {
 
 // how to distribute the matrix among the ranks so that each has
 // the same workload not the same number of rows  but the same number of non-zero elements
-//
-// IDENTICAL to the MPI+task version: partitioning is a purely local,
-// rank-0-only computation, so it has nothing to do with how the OpenMP
-// side of each rank later splits its own local work (task vs for).
+
 static std::vector<BlockRange> partition_rows_by_nnz(const CSRMatrix& A,
                                                       std::size_t num_blocks) {
 
@@ -254,98 +251,84 @@ static std::size_t compute_shift_rows(std::size_t n) {
     return s;
 }
 
-// ==========================================
-// LOCAL KERNELS (Work-Sharing)
-// ==========================================
-// The functions below operate on a subsection [begin, begin+count) of a
-// vector, not on the entire vector: each rank physically holds only its
-// own portion. Unlike the task-based version, none of them create work
-// items - each one contains a "#pragma omp for" and must therefore be
-// called by EVERY thread of an already-open "#pragma omp parallel" team
-// (whole-team call). Never call these from a single thread or serial code.
-
-// vec a and b
-// begin > where to start reading within a/b
-// count > how many elements to process starting from begin
+// dot product over the local slice [begin, begin + count)
+// a, b > input vectors
+// begin > start index inside a/b
+// count > number of elements to process
 // chunk size
 static double local_dot_omp_for(const std::vector<double>& a,
                                 const std::vector<double>& b,
                                 std::size_t begin, std::size_t count,
                                 std::size_t chunk_size) {
 
-    double sum = 0.0; // fresh per call: no stale value, unlike a shared accumulator reused across single blocks
+    double sum = 0.0; // fresh per call
 
-    // reduction(+:sum) > each thread gets a private copy of sum, initialized to 0;
-    // at the end of the loop the copies are combined with "+" into the final sum
+    // omp for > divides the loop iterations among the active thread team
+    // reduction(+:sum) > each thread gets a private copy of sum, then all copies are combined
     #pragma omp for schedule(static, chunk_size) reduction(+:sum)
     for (std::size_t i = 0; i < count; ++i) {
-        sum += a[begin + i] * b[begin + i]; // sum element-wise products of this rank's slice
+        sum += a[begin + i] * b[begin + i]; // sum element-wise products of this slice
     }
-    // implicit barrier here: every thread's "sum" is now the same, fully combined total
+    // implicit barrier here
     return sum;
 }
 
-// scales v in place by factor, over the local range [begin, begin+count)
-// vec v
+// scales v in place by factor over the local slice [begin, begin + count)
+// v > input/output vector
 // begin, count > local range
-// factor > the scalar by which to multiply each component (computed by the caller,
-//          possibly from a value that required MPI communication - see below)
+// factor > scalar multiplier computed by the caller
 // chunk size
 static void local_scale_omp_for(std::vector<double>& v,
                                 std::size_t begin, std::size_t count,
                                 double factor, std::size_t chunk_size) {
+    // omp for > distributes the loop iterations across the active thread team
     #pragma omp for schedule(static, chunk_size)
     for (std::size_t i = 0; i < count; ++i) {
         v[begin + i] *= factor;
     }
 }
 
-// normalizes v in place (L2 norm) over the local range [begin, begin+count).
-// Only usable when the range needed for the norm is entirely local to this
-// rank (e.g. x_full during initialization, which is identical and complete
-// on every rank before any distribution has happened) - zero communication
-// needed. When the range is split across ranks (e.g. y_phys later on), the
-// caller must combine local_dot_omp_for's result with MPI_Allreduce itself
-// and call local_scale_omp_for directly with the resulting global factor.
+// normalizes v in place (L2 norm) over the local slice [begin, begin + count)
+// This is only valid when the whole range is already local to the rank.
+// When the norm spans multiple ranks, the caller must combine the partial
+// dot products with MPI_Allreduce and then pass the global factor here.
 static void normalize_local_omp_for(std::vector<double>& v,
                                     std::size_t begin, std::size_t count,
                                     std::size_t chunk_size) {
     const double sumsq = local_dot_omp_for(v, v, begin, count, chunk_size); // identical on every thread, thanks to the reduction
 
-    // every thread recomputes inv redundantly instead of using a single +
-    // broadcast: sumsq is already identical everywhere, so this trades a
-    // trivial duplicated scalar division/sqrt for one less synchronization point
+    // every thread recomputes inv locally instead of broadcasting it
     const double inv = 1.0 / std::sqrt(sumsq);
 
     local_scale_omp_for(v, begin, count, inv, chunk_size);
 }
 
-// multiplication of this rank's local matrix slice L by the full vector x
-// matrix L (this rank's rows only)
-// global vector x
-// local target vector y, indexed by physical row within this rank
+// multiplication of this rank's local matrix slice by the full vector x
+// L > local matrix of this rank
+// x_full > global input vector
+// y_phys > local output vector
 // chunk size
 static void spmv_local_omp_for(const LocalMatrix& L,
                                const std::vector<double>& x_full,
                                std::vector<double>& y_phys,
                                std::size_t chunk_size) {
     // schedule(dynamic) for the same reason as in the shared-memory version:
-    // rows with more nonzeros cost more, so threads that finish an unusually
-    // light chunk pull the next one from the queue instead of sitting idle
+    // rows with more nonzeros cost more, so light chunks finish earlier and
+    // threads can keep pulling new work from the queue
     #pragma omp for schedule(dynamic, chunk_size)
     for (std::size_t i = 0; i < L.num_rows; ++i) {
         double sum = 0.0;
-        for (std::uint64_t p = L.row_ptr[i]; p < L.row_ptr[i + 1]; ++p) { // CSR iter only the nonzeros values
-            sum += L.values[p] * x_full[L.col_idx[p]]; // multiply the nonzeros of the matrix row by the corresponding elements of the vector
+        for (std::uint64_t p = L.row_ptr[i]; p < L.row_ptr[i + 1]; ++p) { // iterate only the nonzero values
+            sum += L.values[p] * x_full[L.col_idx[p]]; // multiply by the matching x entry
         }
-        y_phys[i] = sum; // save the total in the correct spot
+        y_phys[i] = sum; // save the row result in the local output vector
     }
 }
 
-// MPI_Allgatherv an operation that allows each rank to receive,
-// in a single vector, all the pieces it holds locally, assembled in the correct order
+// MPI_Allgatherv lets every rank receive all local pieces in a single vector
+// assembled in the correct global order
 
-// to do this, MPI needs to know in advance AllgatherPlan
+// AllgatherPlan stores the row counts and displacements needed by MPI_Allgatherv
 struct AllgatherPlan {
     std::vector<int> counts; // number of physical rows of rank r
     std::vector<int> displs; // physical offset (== row_begin) of the rank r
@@ -375,8 +358,7 @@ static AllgatherPlan build_allgather_plan(const std::vector<BlockRange>& all_blo
 static void gather_full_vector(const std::vector<double>& y_phys_local,
                                std::vector<double>& y_phys_full,
                                const AllgatherPlan& plan) {
-    // collective communication - must be called by exactly one thread per
-    // rank (see the "single" wrapping every call site below)
+    // collective communication called by one thread per rank
     // y_phys_local.data() > the buffer that this rank sends its own local piece
     // static_cast<int>(y_phys_local.size()) > n elements is this rank sending
     // MPI_DOUBLE > type of the sent data
@@ -454,22 +436,14 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
 
     const double t_start = MPI_Wtime();
 
-    // Scratch state that must be visible across "single" blocks executed by
-    // potentially different threads (same reasoning as t0 in the pure-OpenMP
-    // version): t0 for timing, sumsq_global for the one value that a single
-    // thread writes via MPI_Allreduce and every thread must then read to
-    // compute the (redundantly-recomputed) scale factor.
+    // scratch state shared across single blocks potentially executed by different threads
     double t0 = 0.0;
     double sumsq_global = 0.0;
 
-    // parallel -> creates the thread team for this rank; uses default(shared)
-    // (not default(none)) because MPI macros like MPI_COMM_WORLD expand to
-    // implementation-specific symbols that would break portability if listed
-    // explicitly in a shared() clause.
+    // parallel -> creates the thread team for this rank
     #pragma omp parallel default(shared)
     {
-        // only one thread of the team executes this block; the RNG has
-        // sequential internal state, so filling x_full cannot be split across threads
+        // only one thread initializes x_full; the RNG state is sequential
         #pragma omp single
         {
             t0 = MPI_Wtime();
@@ -479,20 +453,15 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
             }
         } // every thread waits here until x_full is fully initialized
 
-        // normalize x_full - whole-team call, not isolated in a single.
-        // x_full is already identical and complete on every rank at this
-        // point, so this normalization is purely local: zero communication needed
+        // normalize x_full: the vector is already complete on this rank
         normalize_local_omp_for(x_full, 0, n, norm_chunk_size);
 
         #pragma omp single
         { timers.init_sec = MPI_Wtime() - t0; }
 
-        // main loop - every thread of every rank executes this identically
-        // (SPMD style), synchronized at each phase boundary by the implicit
-        // barriers of "single"/"for" rather than by an outer taskwait
+        // main loop
         for (std::uint32_t iter = 0; iter < NUM_ITERS; ++iter) {
-            // every thread evaluates this identically (iter/EPOCH_LEN are
-            // shared and read-only here), so all threads agree on whether to enter
+            // every thread evaluates the same condition
             if (iter > 0 && (iter % EPOCH_LEN) == 0) {
                 #pragma omp single
                 {
@@ -502,11 +471,11 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 } // implicit barrier: everyone waits until row_shift is updated
             }
 
-            // take t0 after the barrier above, so every thread enters spmv_local_omp_for at the same instant
+            // take t0 after the barrier above
             #pragma omp single
             { t0 = MPI_Wtime(); }
 
-            spmv_local_omp_for(L, x_full, y_phys, chunk_size); // whole-team call, this rank's local rows only
+            spmv_local_omp_for(L, x_full, y_phys, chunk_size); // whole-team call
 
             #pragma omp single
             {
@@ -516,10 +485,7 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 t0 = MPI_Wtime();
             }
 
-            // local sum of squares over this rank's own physical slice;
-            // y_phys is distributed across ranks, so this is only a partial
-            // contribution to the global norm. reduction inside guarantees
-            // sumsq_local is identical on every thread of this rank.
+            // local sum of squares over this rank's physical slice
             const double sumsq_local = local_dot_omp_for(y_phys, y_phys, 0, L.num_rows, norm_chunk_size);
 
             #pragma omp single
@@ -528,24 +494,19 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 timers.computation_sec += dot_elapsed;
                 timers.vector_ops_sec += dot_elapsed;
 
-                // MPI_Allreduce combines sumsq_local from every rank and
-                // gives every rank the same global total. Only one thread
-                // per rank may call it (MPI_THREAD_FUNNELED); "single" here
-                // ensures that.
+                // MPI_Allreduce combines the partial sums from every rank
                 const double tr0 = MPI_Wtime();
                 MPI_Allreduce(&sumsq_local, &sumsq_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
                 timers.reduction_sec += MPI_Wtime() - tr0;
             } // implicit barrier: no thread reads sumsq_global before it's set
 
-            // every thread now holds the same global norm (sumsq_global is
-            // shared, and the barrier above guarantees it's up to date), so
-            // inv can be recomputed redundantly instead of broadcast
+            // every thread now sees the same global norm
             const double inv = 1.0 / std::sqrt(sumsq_global);
 
             #pragma omp single
             { t0 = MPI_Wtime(); }
 
-            // each thread/rank scales only its own local slice by the newly calculated global factor
+            // scale the local slice with the global factor
             local_scale_omp_for(y_phys, 0, L.num_rows, inv, norm_chunk_size); // whole-team call
 
             #pragma omp single
@@ -554,7 +515,7 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 timers.computation_sec += scale_elapsed;
                 timers.vector_ops_sec += scale_elapsed;
 
-                // assemble the local pieces (already normalized) from all ranks into y_phys_full
+                // assemble the local pieces into y_phys_full
                 const double tcm0 = MPI_Wtime();
                 gather_full_vector(y_phys, y_phys_full, plan);
                 timers.communication_sec += MPI_Wtime() - tcm0;
@@ -572,7 +533,7 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
             } // implicit barrier: no one starts the new iteration until the swap is done
         }
 
-        // Rayleigh requires multiplying the final vector by the matrix in its current state
+        // Rayleigh requires one final multiplication
         #pragma omp single
         { t0 = MPI_Wtime(); }
 
@@ -589,19 +550,14 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
             timers.communication_sec += MPI_Wtime() - tfc0;
         } // implicit barrier: y_phys_full is complete everywhere before the branch below
 
-        // The final permutation and the rayleigh/checksum computation are
-        // pure local work, so we restrict them to rank 0 only. Every thread
-        // on rank 0 evaluates "rank == 0" identically (rank is shared and
-        // read-only), so rank 0's whole team enters together and the
-        // omp-for kernels inside still see a complete team; other ranks'
-        // teams simply skip the block, with nothing left to synchronize on.
+        // the final permutation and the rayleigh/checksum computation run on rank 0 only
         if (rank == 0) {
             #pragma omp single
             { t0 = MPI_Wtime(); }
 
             apply_shift_permutation_omp_for(y_phys_full, x_next, row_shift, n, chunk_size); // whole-team call, rank 0 only
-            // x_next now holds "y" (logical) = A_shifted * x_full
-            // x_full remains the final vector to report (no swap here)
+            // x_next now holds the logical y = A_shifted * x_full
+            // x_full remains the final vector to report
 
             #pragma omp single
             {
@@ -611,8 +567,7 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 t0 = MPI_Wtime();
             }
 
-            // reduction inside local_dot_omp_for guarantees rayleigh_local is
-            // identical on every thread, so no single/broadcast is needed to use it below
+            // reduction inside local_dot_omp_for guarantees rayleigh_local is identical on every thread
             const double rayleigh_local = local_dot_omp_for(x_full, x_next, 0, n, norm_chunk_size); // x . (A_shifted * x)
 
             #pragma omp single
@@ -632,7 +587,7 @@ iterative_spmv_evolving_mpi_omp_for(const LocalMatrix& L, std::size_t n,
                 timers.vector_ops_sec += chk_elapsed;
                 result.final_row_shift = row_shift;
 
-                // save vec
+                // save vector
                 if (final_vector_out != nullptr) {
                     *final_vector_out = x_full;
                 }

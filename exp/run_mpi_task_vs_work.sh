@@ -23,10 +23,10 @@ SEED=111
 SPMV_CHUNK=1024
 NORM_CHUNK=16384
 
-# Thread OpenMP per rank, fisso: 1 rank per nodo, scaling e' sui nodi/rank MPI
-THREADS_PER_RANK=8
+# Thread OpenMP per ciascun rank MPI
+MPI_THREADS=16
 
-# Variabile dipendente: scaling dei nodi (1 rank MPI per nodo)
+# Scaling dei nodi (1 rank MPI per nodo -> 1, 2, 4, 8 rank)
 NODE_LIST=(1 2 4 8)
 REPEATS=3
 
@@ -73,7 +73,7 @@ echo "  Matrix (N x NZ):      $N x $NZ"
 echo "  Mode:                 $MODE"
 echo "  SpMV Chunk Size:      $SPMV_CHUNK"
 echo "  Norm Chunk Size:      $NORM_CHUNK"
-echo "  Threads per rank:     $THREADS_PER_RANK"
+echo "  MPI Threads/Rank:     $MPI_THREADS"
 echo "  Nodes to test:        ${NODE_LIST[*]}"
 echo "$SEP"
 
@@ -81,7 +81,7 @@ echo "Nodes,Implementation,Total_Time_Med,Comp_Time_Med,SpMV_Time_Med,Comm_Time_
 
 for NODES in "${NODE_LIST[@]}"; do
     echo "$SEP"
-    echo ">> Testing with Nodes: $NODES (1 rank/node, $THREADS_PER_RANK threads/rank)"
+    echo ">> Testing with Nodes: $NODES (1 rank/node, $MPI_THREADS threads/rank)"
     echo "$SEP"
 
     # ---------------------------------------------------------
@@ -94,8 +94,9 @@ for NODES in "${NODE_LIST[@]}"; do
     comm_mpi_tasks=()
 
     for r in $(seq 1 "$REPEATS"); do
-        out=$(OMP_NUM_THREADS="$THREADS_PER_RANK" srun --time="$SRUN_TIME" -N "$NODES" -n "$NODES" -c "$THREADS_PER_RANK" "$MPI_TASKS_BIN" \
-            -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS_PER_RANK" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
+        echo "  [Run $r/$REPEATS]"
+        out=$(OMP_NUM_THREADS="$MPI_THREADS" srun --time="$SRUN_TIME" --mpi=pmix -N "$NODES" -n "$NODES" -c "$MPI_THREADS" "$MPI_TASKS_BIN" \
+            -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$MPI_THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
 
         tot_mpi_tasks+=($(echo "$out" | extract_tot_time))
         comp_mpi_tasks+=($(echo "$out" | extract_comp_time))
@@ -121,8 +122,9 @@ for NODES in "${NODE_LIST[@]}"; do
     comm_mpi_work=()
 
     for r in $(seq 1 "$REPEATS"); do
-        out=$(OMP_NUM_THREADS="$THREADS_PER_RANK" srun --time="$SRUN_TIME" -N "$NODES" -n "$NODES" -c "$THREADS_PER_RANK" "$MPI_WORK_BIN" \
-            -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$THREADS_PER_RANK" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
+        echo "  [Run $r/$REPEATS]"
+        out=$(OMP_NUM_THREADS="$MPI_THREADS" srun --time="$SRUN_TIME" --mpi=pmix -N "$NODES" -n "$NODES" -c "$MPI_THREADS" "$MPI_WORK_BIN" \
+            -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" -t "$MPI_THREADS" -c "$SPMV_CHUNK" -nc "$NORM_CHUNK")
 
         tot_mpi_work+=($(echo "$out" | extract_tot_time))
         comp_mpi_work+=($(echo "$out" | extract_comp_time))

@@ -108,7 +108,7 @@ static LocalMatrix extract_local_matrix(const CSRMatrix& A, const BlockRange& ra
 }
 
 // MPI process memory is separate—each rank runs in its own address space 
-// must serialize the data and explicitly send it across the network or communication system
+// must serialize the data and explicitly send it across the network
 // local matrix L
 // numeric identifier of the target rank
 static void send_local_matrix(const LocalMatrix& L, int dest_rank) {
@@ -189,7 +189,7 @@ static LocalMatrix setup_and_distribute(std::size_t n, std::uint64_t nz,
         }
         generation_sec = MPI_Wtime() - tg0;
         
-        // collective communication: rank 0 sends the same data to all other ranks 
+        // collective communication rank 0 sends the same data to all other ranks 
         // in the communicator in a single synchronized operation
         // all ranks must call MPI_Bcast it is a collective synchronization point
         // no rank proceeds until all have participated in this call
@@ -474,10 +474,9 @@ iterative_spmv_evolving_mpi_omp(const LocalMatrix& L, std::size_t n,
     std::vector<double> y_phys_full(n); // after the Allgatherv row-indexed phy
 
     const double t_start = MPI_Wtime();
-    // parallel -> creates the thread team for this rank; uses default(shared)
+    // parallel -> creates the thread team for this rank uses default(shared)
     // (not default(none)) because MPI macros like MPI_COMM_WORLD expand to
-    // implementation-specific symbols that would break portability if listed
-    // explicitly in a shared() clause. 
+    // implementation-specific symbols
     #pragma omp parallel
     {
         // only one thread of the team executes this block
@@ -635,7 +634,7 @@ static double reduce_and_print_timer(const char* label, double local_value,
 int main(int argc, char** argv) {
     // tell MPI which level of multithreading support is required
     int provided = MPI_THREAD_SINGLE;
-    // program will have multiple threads but only one specific threa will ever make MPI calls
+    // program will have multiple threads but only one specific threa will make MPI calls
     MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
 
     // process identity 
