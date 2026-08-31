@@ -24,12 +24,11 @@ RESULT_DIR="results"
 CSV_OUTPUT="${RESULT_DIR}/mpi_sweep_results.csv"
 mkdir -p "$RESULT_DIR"
 
-echo "Nodes,Total_Ranks,Threads_Per_Rank,Block_Size,Total_Time_Med,Comp_Time_Med,Comm_Time_Med,Red_Time_Med,Epoch_Time_Med,Scatt_Time_Med" > "$CSV_OUTPUT"
+echo "Ranks,Threads,Total_Time_Med,Comp_Time_Med,Comm_Time_Med,Red_Time_Med,Scatt_Time_Med" > "$CSV_OUTPUT"
 
 extract_comp_time() { grep -oP '(?:Computation time|Time) \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_comm_time() { grep -oP 'Communication time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_red_time()  { grep -oP 'Reduction time \(sec\) = \K[0-9.]+' | head -1 || true; }
-extract_epoch_time(){ grep -oP 'Epoch transition \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_scatt_time(){ grep -oP 'Scatter time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_time()      { grep -oP 'Time \(sec\) = \K[0-9.]+' | head -1 || true; }
 
@@ -44,14 +43,13 @@ calculate_median() {
 }
 
 echo "$SEP"
-echo " MPI+OpenMP HYBRID SWEEP ($REPEATS REPEATS)"
+echo " MPI+OpenMP HYBRID SWEEP ($REPEATS REPEATS) - 250M NZ"
 echo "$SEP"
 echo "  Matrix (N x NZ):      $N x $NZ"
 echo "  Mode:                 $MODE"
 echo "  MPI Nodes:            $MPI_NODES"
 echo "  Cores per Node:       $CORES_PER_NODE"
 echo "  SpMV Chunk Size:      $SPMV_CHUNK"
-echo "  Norm Chunk Size:      $NORM_CHUNK"
 echo "$SEP"
 
 for MPI_THREADS in 1 2 4 8 16 32; do
@@ -74,7 +72,6 @@ for MPI_THREADS in 1 2 4 8 16 32; do
     comp_times=()
     comm_times=()
     red_times=()
-    epoch_times=()
     scatt_times=()
 
     for r in $(seq 1 "$REPEATS"); do
@@ -89,7 +86,6 @@ for MPI_THREADS in 1 2 4 8 16 32; do
         comp_times+=($(echo "$OUTPUT_MPI" | extract_comp_time))
         comm_times+=($(echo "$OUTPUT_MPI" | extract_comm_time))
         red_times+=($(echo "$OUTPUT_MPI" | extract_red_time))
-        epoch_times+=($(echo "$OUTPUT_MPI" | extract_epoch_time))
         scatt_times+=($(echo "$OUTPUT_MPI" | extract_scatt_time))
     done
 
@@ -97,12 +93,11 @@ for MPI_THREADS in 1 2 4 8 16 32; do
     med_comp=$(calculate_median "${comp_times[@]}")
     med_comm=$(calculate_median "${comm_times[@]}")
     med_red=$(calculate_median "${red_times[@]}")
-    med_epoch=$(calculate_median "${epoch_times[@]}")
     med_scatt=$(calculate_median "${scatt_times[@]}")
 
-    echo "  >> MPI_OMP      Medians: Tot=${med_tot}s, Comp=${med_comp}s, Comm=${med_comm}s"
+    echo "  >> Medians: Tot=${med_tot}s, Comp=${med_comp}s, Comm=${med_comm}s"
 
-    echo "$MPI_NODES,$TOTAL_RANKS,$MPI_THREADS,$SPMV_CHUNK,$med_tot,$med_comp,$med_comm,$med_red,$med_epoch,$med_scatt" >> "$CSV_OUTPUT"
+    echo "$TOTAL_RANKS,$MPI_THREADS,$med_tot,$med_comp,$med_comm,$med_red,$med_scatt" >> "$CSV_OUTPUT"
 
 done
 
