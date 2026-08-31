@@ -7,7 +7,7 @@ MPI_OMP_BIN="../mpi_omp_tasks_SpMV"
 SRUN_TIME="00:10:00"
 
 N=1000000
-NZ=25000000
+NZ=250000000
 MODE="irregular"
 SEED=111
 SPMV_CHUNK=2048
@@ -100,12 +100,12 @@ for MPI_THREADS in 1 2 4 8 16 32; do
     med_epoch=$(calculate_median "${epoch_times[@]}")
     med_scatt=$(calculate_median "${scatt_times[@]}")
 
-    echo "  -> MPI_OMP      Medians: Tot=${med_tot}s, Comp=${med_comp}s, Comm=${med_comm}s"
+    echo "  >> MPI_OMP      Medians: Tot=${med_tot}s, Comp=${med_comp}s, Comm=${med_comm}s"
 
     echo "$MPI_NODES,$TOTAL_RANKS,$MPI_THREADS,$SPMV_CHUNK,$med_tot,$med_comp,$med_comm,$med_red,$med_epoch,$med_scatt" >> "$CSV_OUTPUT"
 
 done
 
 echo "$SEP"
-echo " Sweep completed! Results saved to: $CSV_OUTPUT"
+echo " Results saved to: $CSV_OUTPUT"
 echo "$SEP"

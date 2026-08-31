@@ -111,7 +111,7 @@ for MODE in "${MODES[@]}"; do
     m_comp_pth=$(calculate_median "${comp_pth[@]}")
     m_spmv_pth=$(calculate_median "${spmv_pth[@]}")
     echo "$MODE,CPP_THREADS,$m_tot_pth,$m_comp_pth,$m_spmv_pth" >> "$CSV_OUTPUT"
-    echo "  -> CPP_THREADS  Medians: Tot=${m_tot_pth}s, Comp=${m_comp_pth}s"
+    echo "  >> CPP_THREADS  Medians: Tot=${m_tot_pth}s, Comp=${m_comp_pth}s"
 
     tot_omp=(); comp_omp=(); spmv_omp=();
     for r in $(seq 1 "$REPEATS"); do
@@ -126,7 +126,7 @@ for MODE in "${MODES[@]}"; do
     m_comp_omp=$(calculate_median "${comp_omp[@]}")
     m_spmv_omp=$(calculate_median "${spmv_omp[@]}")
     echo "$MODE,OMP_TASKS,$m_tot_omp,$m_comp_omp,$m_spmv_omp" >> "$CSV_OUTPUT"
-    echo "  -> OMP_TASKS    Medians: Tot=${m_tot_omp}s, Comp=${m_comp_omp}s"
+    echo "  >> OMP_TASKS    Medians: Tot=${m_tot_omp}s, Comp=${m_comp_omp}s"
 
     tot_mpi=(); comp_mpi=(); spmv_mpi=();
     for r in $(seq 1 "$REPEATS"); do
@@ -141,10 +141,10 @@ for MODE in "${MODES[@]}"; do
     m_comp_mpi=$(calculate_median "${comp_mpi[@]}")
     m_spmv_mpi=$(calculate_median "${spmv_mpi[@]}")
     echo "$MODE,MPI_OMP,$m_tot_mpi,$m_comp_mpi,$m_spmv_mpi" >> "$CSV_OUTPUT"
-    echo "  -> MPI_OMP      Medians: Tot=${m_tot_mpi}s, Comp=${m_comp_mpi}s"
+    echo "  >> MPI_OMP      Medians: Tot=${m_tot_mpi}s, Comp=${m_comp_mpi}s"
 
 done
 
 echo "$SEP"
-echo " Completed! Results saved to: $CSV_OUTPUT"
+echo " Results saved to: $CSV_OUTPUT"
 echo "$SEP"

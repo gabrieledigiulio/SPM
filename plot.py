@@ -4,9 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-# ==========================================
-# 1. TIME BREAKDOWN PLOTS
-# ==========================================
 def generate_breakdown_plot(csv_filepath, title, filename, legend_loc='upper left'):
     try:
         if not os.path.exists(csv_filepath):
@@ -60,9 +57,6 @@ def generate_breakdown_plot(csv_filepath, title, filename, legend_loc='upper lef
     except Exception as e:
         print(f"[ERROR] Failed to generate {filename}: {e}")
 
-# ==========================================
-# 2. REGULAR VS IRREGULAR PLOTS
-# ==========================================
 def plot_regular_vs_irregular(csv_filepath, output_filename):
     try:
         if not os.path.exists(csv_filepath):
@@ -107,9 +101,6 @@ def plot_regular_vs_irregular(csv_filepath, output_filename):
     except Exception as e:
         print(f"[ERROR] Failed to generate {output_filename}: {e}")
 
-# ==========================================
-# 3. STRONG SCALING PLOTS
-# ==========================================
 def plot_strong_scaling(csv_filepath, output_filename):
     try:
         if not os.path.exists(csv_filepath):
@@ -151,9 +142,6 @@ def plot_strong_scaling(csv_filepath, output_filename):
     except Exception as e:
         print(f"[ERROR] Failed to generate {output_filename}: {e}")
 
-# ==========================================
-# 4. WEAK SCALING PLOTS
-# ==========================================
 def plot_weak_scaling(csv_filepath, output_filename, is_constant=False):
     try:
         if not os.path.exists(csv_filepath):
@@ -199,9 +187,49 @@ def plot_weak_scaling(csv_filepath, output_filename, is_constant=False):
     except Exception as e:
         print(f"[ERROR] Failed to generate {output_filename}: {e}")
 
-# ==========================================
-# MAIN CLI
-# ==========================================
+def plot_task_vs_work(omp_csv, mpi_csv, output_filename):
+    try:
+        if not os.path.exists(omp_csv) or not os.path.exists(mpi_csv):
+            print(f"[SKIP] Missing CSV files for Task vs Work comparison: {omp_csv} or {mpi_csv}")
+            return
+
+        df_omp = pd.read_csv(omp_csv)
+        df_mpi = pd.read_csv(mpi_csv)
+
+        omp_tasks = df_omp[df_omp['Implementation'] == 'OMP_TASKS']
+        omp_work = df_omp[df_omp['Implementation'] == 'OMP_WORKSHARING']
+
+        mpi_tasks = df_mpi[df_mpi['Implementation'] == 'MPI_OMP_TASKS']
+        mpi_work = df_mpi[df_mpi['Implementation'] == 'MPI_OMP_WORKSHARING']
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+        ax1.plot(omp_tasks['Threads'], omp_tasks['Total_Time_Med'], marker='o', label='OMP Tasks', linewidth=2, color='#1f77b4')
+        ax1.plot(omp_work['Threads'], omp_work['Total_Time_Med'], marker='s', label='OMP Work-Sharing', linewidth=2, linestyle='--', color='#ff7f0e')
+        ax1.set_title('Single-Node Execution (OpenMP)', fontsize=14, pad=10)
+        ax1.set_xlabel('Number of Threads', fontsize=12)
+        ax1.set_ylabel('Total Execution Time (s)', fontsize=12)
+        ax1.set_xticks(omp_tasks['Threads'])
+        ax1.legend(fontsize=11)
+        ax1.grid(True, linestyle='--', alpha=0.6)
+
+        ax2.plot(mpi_tasks['Nodes'], mpi_tasks['Total_Time_Med'], marker='o', label='MPI+OMP Tasks', linewidth=2, color='#1f77b4')
+        ax2.plot(mpi_work['Nodes'], mpi_work['Total_Time_Med'], marker='s', label='MPI+OMP Work-Sharing', linewidth=2, linestyle='--', color='#ff7f0e')
+        ax2.set_title('Distributed Execution (MPI + OpenMP)', fontsize=14, pad=10)
+        ax2.set_xlabel('Number of Nodes', fontsize=12)
+        ax2.set_ylabel('Total Execution Time (s)', fontsize=12)
+        ax2.set_xticks(mpi_tasks['Nodes'])
+        ax2.legend(fontsize=11)
+        ax2.grid(True, linestyle='--', alpha=0.6)
+
+        plt.tight_layout()
+        plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"[OK] Saved task vs work plot: {output_filename}")
+
+    except Exception as e:
+        print(f"[ERROR] Failed to generate {output_filename}: {e}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate plots from experimental CSV results.")
     parser.add_argument("--all", action="store_true", help="Generate all plots")
@@ -209,10 +237,10 @@ if __name__ == "__main__":
     parser.add_argument("--regular-vs-irregular", action="store_true", help="Generate regular vs irregular plots")
     parser.add_argument("--strong-scaling", action="store_true", help="Generate strong scaling plots")
     parser.add_argument("--weak-scaling", action="store_true", help="Generate weak scaling plots")
+    parser.add_argument("--task-vs-work", action="store_true", help="Generate task vs work-sharing comparison plot")
     args = parser.parse_args()
 
-    # If no specific flags are passed, generate everything
-    if not any([args.all, args.breakdown, args.regular_vs_irregular, args.strong_scaling, args.weak_scaling]):
+    if not any([args.all, args.breakdown, args.regular_vs_irregular, args.strong_scaling, args.weak_scaling, args.task_vs_work]):
         args.all = True
 
     if args.all:
@@ -220,6 +248,7 @@ if __name__ == "__main__":
         args.regular_vs_irregular = True
         args.strong_scaling = True
         args.weak_scaling = True
+        args.task_vs_work = True
 
     os.makedirs("img", exist_ok=True)
 
@@ -265,4 +294,11 @@ if __name__ == "__main__":
             "exp/results/weak_scaling_constant_results.csv", 
             "img/weak_scalability_constant.png",
             is_constant=True
+        )
+
+    if args.task_vs_work:
+        plot_task_vs_work(
+            "exp/results/omp_task_vs_work.csv",
+            "exp/results/mpi_task_vs_work.csv",
+            "img/task_vs_work_comparison.png"
         )

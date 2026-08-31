@@ -148,7 +148,7 @@ for nc in "${NORM_CHUNKS[@]}"; do
     m_cpp_spmv=$(calculate_median "${cpp_spmv[@]}")
     m_cpp_ep=$(calculate_median "${cpp_ep[@]}")
     echo "$nc,CPP_THREADS,$m_cpp_tot,$m_cpp_comp,$m_cpp_vec,$m_cpp_spmv,$m_cpp_ep" >> "$CSV_OUTPUT"
-    echo "  -> CPP_THREADS  Medians: Tot=${m_cpp_tot}s, Comp=${m_cpp_comp}s"
+    echo "  >> CPP_THREADS  Medians: Tot=${m_cpp_tot}s, Comp=${m_cpp_comp}s"
 
     m_omp_tot=$(calculate_median "${omp_tot[@]}")
     m_omp_comp=$(calculate_median "${omp_comp[@]}")
@@ -156,7 +156,7 @@ for nc in "${NORM_CHUNKS[@]}"; do
     m_omp_spmv=$(calculate_median "${omp_spmv[@]}")
     m_omp_ep=$(calculate_median "${omp_ep[@]}")
     echo "$nc,OMP_TASKS,$m_omp_tot,$m_omp_comp,$m_omp_vec,$m_omp_spmv,$m_omp_ep" >> "$CSV_OUTPUT"
-    echo "  -> OMP_TASKS    Medians: Tot=${m_omp_tot}s, Comp=${m_omp_comp}s"
+    echo "  >> OMP_TASKS    Medians: Tot=${m_omp_tot}s, Comp=${m_omp_comp}s"
 
     m_mpi_tot=$(calculate_median "${mpi_tot[@]}")
     m_mpi_comp=$(calculate_median "${mpi_comp[@]}")
@@ -164,10 +164,10 @@ for nc in "${NORM_CHUNKS[@]}"; do
     m_mpi_spmv=$(calculate_median "${mpi_spmv[@]}")
     m_mpi_ep=$(calculate_median "${mpi_ep[@]}")
     echo "$nc,MPI_OMP,$m_mpi_tot,$m_mpi_comp,$m_mpi_vec,$m_mpi_spmv,$m_mpi_ep" >> "$CSV_OUTPUT"
-    echo "  -> MPI_OMP      Medians: Tot=${m_mpi_tot}s, Comp=${m_mpi_comp}s"
+    echo "  >> MPI_OMP      Medians: Tot=${m_mpi_tot}s, Comp=${m_mpi_comp}s"
 
 done
 
 echo "$SEP"
-echo " Completed! Results saved to: $CSV_OUTPUT"
+echo " Results saved to: $CSV_OUTPUT"
 echo "$SEP"

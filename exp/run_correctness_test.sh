@@ -63,7 +63,7 @@ extract_rayleigh()  { grep -oP 'rayleigh=\K[-0-9.eE+]+' || true; }
 print_optional_metric() {
     local label="$1" value="$2"
     if [ -n "$value" ]; then
-        echo "  -> ${label}: ${value} s"
+        echo "  >> ${label}: ${value} s"
     fi
 }
 
@@ -95,12 +95,12 @@ run_and_extract() {
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
-    echo "  -> Computation: ${!t_var} s"
-    echo "  -> Checksum:  ${!c_var}"
-    echo "  -> Rayleigh:  ${!r_var}"
+    echo "  >> Computation: ${!t_var} s"
+    echo "  >> Checksum:    ${!c_var}"
+    echo "  >> Rayleigh:    ${!r_var}"
     print_optional_metric "Vector ops" "$vecops_time"
     print_optional_metric "SpMV" "$spmv_time"
-    print_optional_metric "Epoch transition" "$epoch_time"
+    print_optional_metric "Epoch trans." "$epoch_time"
 }
 
 run_and_extract_mpi() {
@@ -122,9 +122,9 @@ run_and_extract_mpi() {
     declare -g "${label}_RAY=$(echo "$out" | extract_rayleigh)"
 
     local t_var="${label}_TIME" c_var="${label}_CHK" r_var="${label}_RAY"
-    echo "  -> Computation: ${!t_var} s"
-    echo "  -> Checksum:  ${!c_var}"
-    echo "  -> Rayleigh:  ${!r_var}"
+    echo "  >> Computation: ${!t_var} s"
+    echo "  >> Checksum:    ${!c_var}"
+    echo "  >> Rayleigh:    ${!r_var}"
 }
 
 dump_matches_tolerance() {
@@ -152,12 +152,12 @@ compare_pairs() {
     local chk1_var="${l1}_CHK" chk2_var="${l2}_CHK"
     local ray1_var="${l1}_RAY" ray2_var="${l2}_RAY"
 
-    echo "--- $l1 vs $l2 ---"
+    echo ">> $l1 vs $l2"
 
     if [ "${!chk1_var}" == "${!chk2_var}" ] && [ -n "${!chk1_var}" ]; then
-        echo "  [OK] Checksums: MATCH (${!chk1_var})"
+        echo "  >> Checksums:  MATCH (${!chk1_var})"
     else
-        echo "  [INFO] Checksums: DIFFER (${!chk1_var:-N/A} vs ${!chk2_var:-N/A})"
+        echo "  >> Checksums:  DIFFER (${!chk1_var:-N/A} vs ${!chk2_var:-N/A})"
     fi
 
     if [ -n "${!ray1_var}" ] && [ -n "${!ray2_var}" ]; then
@@ -168,23 +168,23 @@ compare_pairs() {
             'BEGIN { d = v1 - v2; if (d < 0) d = -d; print (d <= tol) ? "PASS" : "FAIL" }')
 
         if [ "$check_result" == "PASS" ]; then
-            echo "  [OK] Rayleigh: VALIDATED (Diff: $diff_val <= $TOLERANCE)"
+            echo "  >> Rayleigh:   VALIDATED (Diff: $diff_val <= $TOLERANCE)"
         else
-            echo "  [ERROR] Rayleigh: OUT OF TOLERANCE! (Diff: $diff_val > $TOLERANCE)"
+            echo "  >> Rayleigh:   OUT OF TOLERANCE (Diff: $diff_val > $TOLERANCE)"
         fi
     else
-        echo "  [ERROR] Rayleigh: MISSING VALUES"
+        echo "  >> Rayleigh:   MISSING VALUES"
     fi
 
     if [ "$ENABLE_DUMP" = true ]; then
         if [ -f "$d1" ] && [ -f "$d2" ]; then
             if dump_matches_tolerance "$d1" "$d2"; then
-                echo "  [OK] Dump Files: VALIDATED (all elements differ by <= $TOLERANCE)"
+                echo "  >> Dump Files: VALIDATED (all elements within $TOLERANCE)"
             else
-                echo "  [ERROR] Dump Files: OUT OF TOLERANCE!"
+                echo "  >> Dump Files: OUT OF TOLERANCE"
             fi
         else
-            echo "  [WARN] Dump Files: NOT FOUND for comparison"
+            echo "  >> Dump Files: NOT FOUND for comparison"
         fi
     fi
 }
@@ -204,7 +204,7 @@ if [ "$ENABLE_DUMP" = true ]; then
     DUMP_FLAG=("--dump-vector" "$SEQ_DUMP_FILE")
 fi
 
-echo "Running SEQ..."
+echo ">> Running SEQ..."
 run_and_extract "SEQ" "$SEQ_BIN" -n "$N" -nz "$NZ" -m "$MODE" -s "$SEED" "${DUMP_FLAG[@]}"
 
 for entry in "${IMPLS[@]}"; do
@@ -215,7 +215,7 @@ for entry in "${IMPLS[@]}"; do
     DUMP_FLAG=()
     if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
 
-    echo "Running $label (-N 1, -t $th, -c $chk, -nc $nchk)..."
+    echo ">> Running $label (threads: $th, chunk: $chk, norm_chunk: $nchk)..."
     run_and_extract "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
 done
@@ -228,7 +228,7 @@ for entry in "${MPI_IMPLS[@]}"; do
     DUMP_FLAG=()
     if [ "$ENABLE_DUMP" = true ]; then DUMP_FLAG=("--dump-vector" "$dump_file"); fi
 
-    echo "Running $label (-N $MPI_NODES, -n $MPI_RANKS, -t $th, -c $chk, -nc $nchk)..."
+    echo ">> Running $label (nodes: $MPI_NODES, ranks: $MPI_RANKS, threads/rank: $th, chunk: $chk, norm_chunk: $nchk)..."
     run_and_extract_mpi "$label" "$binary" -n "$N" -nz "$NZ" -m "$MODE" \
         -t "$th" -c "$chk" -nc "$nchk" -s "$SEED" "${DUMP_FLAG[@]}"
 done
@@ -277,7 +277,7 @@ for (( i=0; i<${#ALL_LABELS[@]}; i++ )); do
         done
 
         if [ "$same_dump" -eq 0 ]; then
-            echo "  [SKIP] $label: dump comparison failed, row not saved to CSV"
+            echo "  >> Warning: $label dump comparison failed, row omitted from CSV"
             continue
         fi
     fi

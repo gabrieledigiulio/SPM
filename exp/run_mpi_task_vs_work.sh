@@ -3,9 +3,6 @@ set -euo pipefail
 
 SEP=$(printf '=%.0s' {1..58})
 
-# ==========================================
-# 1. Test Parameter Configuration
-# ==========================================
 MPI_TASKS_BIN="../mpi_omp_tasks_SpMV"
 MPI_WORK_BIN="../mpi_omp_worksharing_SpMV"
 SRUN_TIME="00:30:00"
@@ -13,20 +10,15 @@ SRUN_TIME="00:30:00"
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
-# Problem Parameters (Fissi, stress test su irregular)
 N=1000000
 NZ=250000000
 MODE="irregular"
 SEED=111
 
-# Ottimizzazioni
 SPMV_CHUNK=1024
 NORM_CHUNK=16384
 
-# Thread OpenMP per ciascun rank MPI
 MPI_THREADS=16
-
-# Scaling dei nodi (1 rank MPI per nodo -> 1, 2, 4, 8 rank)
 NODE_LIST=(1 2 4 8)
 REPEATS=3
 
@@ -34,9 +26,6 @@ RESULT_DIR="results"
 mkdir -p "$RESULT_DIR"
 CSV_OUTPUT="${RESULT_DIR}/mpi_task_vs_work.csv"
 
-# ==========================================
-# 2. Extraction & Math Functions
-# ==========================================
 extract_tot_time()  { grep -oP '^Time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_comp_time() { grep -oP 'Computation time \(sec\) = \K[0-9.]+' | head -1 || true; }
 extract_spmv_time() { grep -oP 'SpMV time \(sec\) = \K[0-9.]+' | head -1 || true; }
@@ -63,9 +52,6 @@ calculate_median() {
         }'
 }
 
-# ==========================================
-# 3. Execution Logic
-# ==========================================
 echo "$SEP"
 echo " MPI+OMP TASKS vs MPI+OMP WORK-SHARING ($REPEATS REPEATS)"
 echo "$SEP"
@@ -84,10 +70,7 @@ for NODES in "${NODE_LIST[@]}"; do
     echo ">> Testing with Nodes: $NODES (1 rank/node, $MPI_THREADS threads/rank)"
     echo "$SEP"
 
-    # ---------------------------------------------------------
-    # 1. MPI + OPENMP TASKS
-    # ---------------------------------------------------------
-    echo "  -> Running MPI + OpenMP Tasks..."
+    echo "  >> Running MPI + OpenMP Tasks..."
     tot_mpi_tasks=()
     comp_mpi_tasks=()
     spmv_mpi_tasks=()
@@ -112,10 +95,7 @@ for NODES in "${NODE_LIST[@]}"; do
     echo "$NODES,MPI_OMP_TASKS,$m_tot_tasks,$m_comp_tasks,$m_spmv_tasks,$m_comm_tasks" >> "$CSV_OUTPUT"
     echo "     Medians [Tasks]: Tot=${m_tot_tasks}s, Comp=${m_comp_tasks}s, Comm=${m_comm_tasks}s"
 
-    # ---------------------------------------------------------
-    # 2. MPI + OPENMP WORK-SHARING
-    # ---------------------------------------------------------
-    echo "  -> Running MPI + OpenMP Work-Sharing (omp for)..."
+    echo "  >> Running MPI + OpenMP Work-Sharing (omp for)..."
     tot_mpi_work=()
     comp_mpi_work=()
     spmv_mpi_work=()
@@ -143,5 +123,5 @@ for NODES in "${NODE_LIST[@]}"; do
 done
 
 echo "$SEP"
-echo " Experiment completed! Results saved to: $CSV_OUTPUT"
+echo " Results saved to: $CSV_OUTPUT"
 echo "$SEP"

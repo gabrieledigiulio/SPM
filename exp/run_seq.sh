@@ -60,7 +60,7 @@ for r in $(seq 1 "$REPEATS"); do
     run_time=$(echo "$out_seq" | extract_tot_time)
     tot_times+=("$run_time")
 
-    echo "  -> Tot=${run_time}s"
+    echo "  >> Tot=${run_time}s"
 done
 
 m_tot=$(calculate_median "${tot_times[@]}")

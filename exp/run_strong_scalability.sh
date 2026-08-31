@@ -94,9 +94,9 @@ for nodes in "${NODES_LIST[@]}"; do
     IFS='|' read -r m_tot m_comp m_comm m_red m_scatt m_epoch <<< "$median_run"
 
     echo "$nodes,$m_tot,$m_comp,$m_comm,$m_red,$m_scatt,$m_epoch" >> "$CSV_OUTPUT"
-    echo "  -> Median-run: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
+    echo "  >> Median-run: Tot=${m_tot}s, Comp=${m_comp}s, Comm=${m_comm}s"
 done
 
 echo "$SEP"
-echo " Completed! Results saved to: $CSV_OUTPUT"
+echo " Results saved to: $CSV_OUTPUT"
 echo "$SEP"
