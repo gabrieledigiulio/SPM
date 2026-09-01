@@ -27,7 +27,7 @@ This project explores and compares different parallelization strategies for iter
 At each iteration $k \in [0, 500)$, the program repeatedly performs a Sparse Matrix-Vector multiplication followed by an $L_2$ vector normalization:
 
 1. **Matrix Evolution (every 25 iterations)**: The matrix undergoes a circular row shift:
-   $$\text{src\_row} = (i + N - \text{row\_shift}) \pmod N$$
+   $$\text{src_row} = (i + N - \text{row_shift}) \pmod N$$
    This alters the active non-zero distribution across threads and nodes dynamically, without requiring costly matrix reallocations.
 2. **SpMV Multiplication**: Computes the intermediate dense vector $y = A_{\text{shifted}} \cdot x$.
 3. **Normalization**: Calculates the Euclidean norm $\|y\|_2 = \sqrt{y \cdot y}$ and normalizes $y = y / \|y\|_2$.
