@@ -34,7 +34,7 @@ At each iteration $k \in [0, 500)$, the program repeatedly performs a Sparse Mat
 4. **Pointer Swap**: Swaps vectors ($x \leftrightarrow y$) to prepare for the next step.
 
 ### Validation & Diagnostics
-After completing 500 iterations, the program computes two invariant metrics to verify numerical correctness across all parallel variants:
+After completing 500 iterations, the program computes two diagnostic metrics used for cross-implementation validation:
 * **Rayleigh Quotient**: $\lambda = \frac{x^T A_{\text{shifted}} x}{x^T x} = x^T y$, representing the dominant eigenvalue estimate.
 * **64-bit Bitwise Checksum**: A deterministic hash of the final IEEE-754 vector elements, used as a secondary diagnostic alongside the Rayleigh quotient.
 
