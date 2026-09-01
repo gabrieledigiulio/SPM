@@ -1,277 +1,204 @@
-# Iterative Sparse Matrix-Vector Product
+# Evolving SpMV: Parallel Iterative Sparse Matrix-Vector Multiplication
 
-Questo progetto confronta diverse implementazioni di una iterazione SpMV su una matrice sparsa che evolve nel tempo tramite shift circolari delle righe. Le varianti confrontate sono:
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![OpenMP](https://img.shields.io/badge/OpenMP-5.0+-green.svg)](https://www.openmp.org/)
+[![MPI](https://img.shields.io/badge/MPI-PMIx%20%2F%20Slurm-orange.svg)](https://www.open-mpi.org/)
+[![Python](https://img.shields.io/badge/Python-3.8+-yellow.svg)](https://www.python.org/)
 
-- sequenziale
-- thread pool in C++
-- OpenMP con task
-- OpenMP con work-sharing (`omp for`)
-- MPI + OpenMP con task
-- MPI + OpenMP con work-sharing (`omp for`)
+This project explores and compares different parallelization strategies for iterative **Sparse Matrix-Vector Multiplication (SpMV)** on a sparse matrix that evolves over time via circular row shifts. It benchmarks and analyzes performance, load balancing, granularity, and communication overhead across shared-memory (C++ Threads, OpenMP) and distributed-memory (MPI + OpenMP) architectures.
 
-L'obiettivo e' misurare tempi, scalabilita' e comportamento al variare della granularita' del lavoro, del numero di thread e del numero di nodi MPI.
 
-## Cosa fa il programma
+## Parallel Implementations
 
-Ogni eseguibile:
+| Implementation | Source File | Paradigm & Technology | Description |
+| :--- | :--- | :--- | :--- |
+| **Sequential** | [`iterative_SpMV.cpp`](iterative_SpMV.cpp) | Single-Threaded C++20 | Baseline reference implementation with zero synchronization overhead. |
+| **C++ Thread Pool** | [`threadpool_SpMV.cpp`](threadpool_SpMV.cpp) | C++20 Thread Pool & Tasks | Modern task pool leveraging `std::jthread`, `std::future`, and concurrent worker queues. |
+| **OpenMP Tasks** | [`omp_tasks_SpMV.cpp`](omp_tasks_SpMV.cpp) | OpenMP Tasking | Dynamic task graph scheduling using `#pragma omp task` and `#pragma omp taskgroup`. |
+| **OpenMP Work-Sharing** | [`omp_worksharing_SpMV.cpp`](omp_worksharing_SpMV.cpp) | OpenMP Work-Sharing | Thread-team parallelization using static `#pragma omp for schedule(static, chunk_size)`. |
+| **MPI + OpenMP Tasks** | [`mpi_omp_tasks_SpMV.cpp`](mpi_omp_tasks_SpMV.cpp) | Distributed Hybrid Tasks | Non-zero distributed matrix decomposition + multi-threaded local OpenMP task execution. |
+| **MPI + OpenMP Work-Sharing** | [`mpi_omp_worksharing_SpMV.cpp`](mpi_omp_worksharing_SpMV.cpp) | Distributed Hybrid Loops | Distributed memory decomposition + OpenMP static work-sharing per rank. |
 
-1. genera una matrice sparsa in formato CSR;
-2. inizializza un vettore con un PRNG deterministico;
-3. normalizza il vettore;
-4. esegue `NUM_ITERS = 500` iterazioni di SpMV;
-5. ogni `EPOCH_LEN = 25` iterazioni aggiorna l'evoluzione della matrice con uno shift di righe;
-6. alla fine calcola checksum e Rayleigh quotient;
-7. stampa il breakdown temporale e, se richiesto, salva il vettore finale.
+---
 
-La matrice puo' essere generata in due modalita':
+## Problem & Computational Workflow
 
-- `regular`: non-zero distribuiti in modo quasi uniforme tra le righe;
-- `irregular`: non-zero concentrati in alcune fasce di righe, utile per stressare il load balancing.
+### The Computational Loop
+At each iteration $k \in [0, 500)$, the program repeatedly performs a Sparse Matrix-Vector multiplication followed by an $L_2$ vector normalization:
 
-## Struttura dei file
+1. **Matrix Evolution (every 25 iterations)**: The matrix undergoes a circular row shift:
+   $$\text{src\_row} = (i + N - \text{row\_shift}) \pmod N$$
+   This alters the active non-zero distribution across threads and nodes dynamically, without requiring costly matrix reallocations.
+2. **SpMV Multiplication**: Computes the intermediate dense vector $y = A_{\text{shifted}} \cdot x$.
+3. **Normalization**: Calculates the Euclidean norm $\|y\|_2 = \sqrt{y \cdot y}$ and normalizes $y = y / \|y\|_2$.
+4. **Pointer Swap**: Swaps vectors ($x \leftrightarrow y$) to prepare for the next step.
 
-### Sorgenti principali
+### Validation & Diagnostics
+After completing 500 iterations, the program computes two invariant metrics to verify numerical correctness across all parallel variants:
+* **Rayleigh Quotient**: $\lambda = \frac{x^T A_{\text{shifted}} x}{x^T x} = x^T y$, representing the dominant eigenvalue estimate.
+* **64-bit Bitwise Checksum**: A deterministic hash of the final IEEE-754 vector elements to ensure bit-level parity across parallel runs.
 
-- [iterative_SpMV.cpp](iterative_SpMV.cpp): riferimento sequenziale del progetto.
-- [threadpool_SpMV.cpp](threadpool_SpMV.cpp): versione parallela con thread pool C++.
-- [omp_tasks_SpMV.cpp](omp_tasks_SpMV.cpp): versione OpenMP basata su task.
-- [omp_worksharing_SpMV.cpp](omp_worksharing_SpMV.cpp): versione OpenMP basata su work-sharing (`omp for`).
-- [mpi_omp_tasks_SpMV.cpp](mpi_omp_tasks_SpMV.cpp): versione ibrida MPI + OpenMP con task.
-- [mpi_omp_worksharing_SpMV.cpp](mpi_omp_worksharing_SpMV.cpp): versione ibrida MPI + OpenMP con work-sharing.
+### Sparsity Patterns
+To stress-test different parallelization strategies, matrices can be generated in two modes:
+* **`regular`**: Non-zero elements are uniformly distributed across all rows, providing an evenly balanced workload for static chunking.
+* **`irregular`**: Non-zeros are concentrated in dense bands, creating severe computational imbalance that stresses dynamic task scheduling and MPI non-zero domain decomposition.
 
-### Header e supporto
+---
 
-- [matrix_generation.hpp](matrix_generation.hpp): generazione della matrice CSR e dei pattern `regular`/`irregular`.
-- [utils.hpp](utils.hpp): parsing degli argomenti, PRNG, checksum, dump del vettore e timer.
-- [threadpool.hpp](threadpool.hpp): implementazione del thread pool usato dalla variante C++.
+## Project Structure
 
-### Analisi e grafici
-
-- [plot.py](plot.py): genera i grafici a partire dai CSV prodotti dagli esperimenti.
-
-### Esperimenti
-
-La cartella [exp](exp) contiene gli script di benchmark. Ogni script lancia uno o piu' eseguibili con parametri fissati, raccoglie i tempi medi/mediani e salva i risultati in [exp/results](exp/results).
-
-## Requisiti
-
-- compilatore C++20
-- supporto OpenMP
-- MPI con `mpicxx`/`mpic++`
-- Slurm, perche' gli script usano `srun`
-- Python 3 con `pandas`, `numpy`, `matplotlib` per i grafici
-
-Per installare le dipendenze Python:
-
-```bash
-python -m pip install pandas numpy matplotlib
+```
+project/
+├── iterative_SpMV.cpp             # Sequential baseline
+├── threadpool_SpMV.cpp            # Custom C++20 thread pool implementation
+├── omp_tasks_SpMV.cpp             # OpenMP task-based implementation
+├── omp_worksharing_SpMV.cpp       # OpenMP work-sharing implementation
+├── mpi_omp_tasks_SpMV.cpp         # Hybrid MPI + OpenMP tasks implementation
+├── mpi_omp_worksharing_SpMV.cpp   # Hybrid MPI + OpenMP work-sharing implementation
+├── matrix_generation.hpp          # CSR matrix generator (regular & irregular sparsity)
+├── utils.hpp                      # Core utilities: CLI parsing, timers, checksum, diagnostics
+├── threadpool.hpp                 # Lock-based concurrent worker thread pool
+├── plot.py                        # Centralized visualization and figure generation script
+├── README.md                      # Project documentation
+│
+├── exp/                           # Benchmarking and experimentation suite
+│   ├── run_seq.sh                 # Sequential baseline evaluation
+│   ├── run_correctness_test.sh    # Numerical cross-validation across all paradigms
+│   ├── run_omp_task_vs_work.sh    # OpenMP Tasks vs Work-Sharing benchmark
+│   ├── run_mpi_task_vs_work.sh    # MPI+OpenMP Tasks vs Work-Sharing benchmark
+│   ├── run_mpi_sweep.sh           # MPI Ranks vs OpenMP Threads grid exploration
+│   ├── run_granularity.sh         # SpMV task chunk size sweep
+│   ├── run_granularity_norm.sh    # Vector normalization chunk size sweep
+│   ├── run_regular_irregular.sh   # Memory access pattern comparison
+│   ├── run_strong_scalability.sh  # Multi-node strong scaling evaluation
+│   ├── run_weak_scalability.sh    # Proportional weak scaling evaluation
+│   ├── run_weak_scalability_constant.sh # Weak scaling with constant matrix dimension N
+│   └── results/                   # Experimental CSV data output directory
+│
+└── img/                           # Generated benchmark charts and visual figures
 ```
 
-## Compilazione
+---
 
-I comandi seguenti assumono di essere nella root del progetto: `project/`.
+## Prerequisites & Dependencies
+
+* **C++ Compiler**: GCC 10+, Clang 11+, or any toolchain fully supporting **C++20**.
+* **OpenMP**: OpenMP 4.5+ or 5.0+ runtime support.
+* **MPI Implementation**: OpenMPI 4.0+ or MPICH with `mpicxx` wrapper.
+* **Workload Manager**: Slurm environment (`srun`) for cluster-scale execution.
+* **Python 3** (for analysis & plotting):
+  ```bash
+  pip install pandas matplotlib numpy
+  ```
+
+---
+
+## Build Instructions
+
+Compile the binaries directly from the project root directory:
 
 ```bash
-# Sequenziale
+# 1. Sequential Reference
 g++ -O3 -std=c++20 -I . -Wall -Wextra iterative_SpMV.cpp -o iterative_SpMV
 
-# Thread pool
+# 2. C++ Thread Pool
 g++ -O3 -std=c++20 -I . -Wall -Wextra -pthread threadpool_SpMV.cpp -o threadpool_SpMV
 
-# OpenMP task
+# 3. OpenMP Tasks
 g++ -O3 -std=c++20 -I . -Wall -Wextra -fopenmp omp_tasks_SpMV.cpp -o omp_tasks_SpMV
 
-# OpenMP work-sharing
+# 4. OpenMP Work-Sharing
 g++ -O3 -std=c++20 -I . -Wall -Wextra -fopenmp omp_worksharing_SpMV.cpp -o omp_worksharing_SpMV
 
-# MPI + OpenMP task
+# 5. Hybrid MPI + OpenMP Tasks
 mpicxx -O3 -std=c++20 -I . -Wall -Wextra -fopenmp mpi_omp_tasks_SpMV.cpp -o mpi_omp_tasks_SpMV
 
-# MPI + OpenMP work-sharing
+# 6. Hybrid MPI + OpenMP Work-Sharing
 mpicxx -O3 -std=c++20 -I . -Wall -Wextra -fopenmp mpi_omp_worksharing_SpMV.cpp -o mpi_omp_worksharing_SpMV
 ```
 
-Se il tuo ambiente usa un nome diverso per il compilatore MPI, sostituisci `mpicxx` con `mpiCC` o con il wrapper disponibile nel sistema.
+---
 
-## Come lanciare i singoli programmi
+## CLI & Execution Reference
 
-Formato base degli argomenti:
+### Command-Line Arguments
 
+| Flag | Type | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `-n` | `uint64` | Matrix dimension ($N \times N$) | *Mandatory* |
+| `-nz` | `uint64` | Total number of non-zero elements ($NZ$) | *Mandatory* |
+| `-m` | `string` | Sparsity distribution mode: `regular` or `irregular` | *Mandatory* |
+| `-t` | `uint64` | Number of worker threads (or threads per MPI rank) | *Mandatory (parallel)* |
+| `-c` | `uint64` | SpMV chunk size (number of rows per parallel task/chunk) | *Mandatory (parallel)* |
+| `-nc` | `uint64` | Vector normalization chunk size | *Mandatory (parallel)* |
+| `-s` | `uint64` | Deterministic random seed for matrix and PRNG | `111` |
+| `--dump-vector` | `string` | Output filepath to dump final normalized vector | *None (disabled)* |
+
+### Example Executions
+
+#### Standalone Shared-Memory Run
 ```bash
--n N              dimensione della matrice N x N
--nz K             numero totale di non-zero
--m regular|irregular
--s SEED           seme opzionale, default 111
--t THREADS        numero di thread (solo versioni parallele)
--c CHUNK_SIZE     granularita' per SpMV
--nc NORM_CHUNK    granularita' per la normalizzazione
---dump-vector FILE  salva il vettore finale normalizzato
+# Run OpenMP Task-Based SpMV with 16 threads and chunk size 2048
+./omp_tasks_SpMV -n 1000000 -nz 250000000 -m irregular -t 16 -c 2048 -nc 2048 -s 111
 ```
 
-Esempi:
-
-```bash
-./iterative_SpMV -n 500000 -nz 20000000 -m irregular
-./threadpool_SpMV -n 500000 -nz 20000000 -m irregular -t 16 -c 2048 -nc 2048
-./omp_worksharing_SpMV -n 500000 -nz 20000000 -m irregular -t 16 -c 2048 -nc 2048
-```
-
-Per le varianti MPI + OpenMP, l'esecuzione va fatta tramite `srun`:
-
-```bash
-OMP_NUM_THREADS=16 srun --mpi=pmix -N 8 -n 8 --cpus-per-task=16 \
-	./mpi_omp_worksharing_SpMV \
-	-n 1000000 -nz 250000000 -m irregular -s 111 \
-	-t 16 -c 2048 -nc 2048
-```
-
-Gli script in [exp](exp) impostano anche:
-
+#### Distributed Cluster Run (Slurm + MPI)
 ```bash
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
+export OMP_NUM_THREADS=16
+
+# Run 8 nodes, 1 rank/node, 16 OpenMP threads per rank
+srun --time=00:15:00 --mpi=pmix -N 8 -n 8 --cpus-per-task=16 \
+    ./mpi_omp_tasks_SpMV -n 1000000 -nz 250000000 -m irregular -t 16 -c 2048 -nc 2048 -s 111
 ```
 
-## Esperimenti
+---
 
-Gli script vanno lanciati dalla cartella [exp](exp), perche' usano binari referenziati come `../nome_binario`.
+## Benchmark Suite (`exp/`)
 
-### Baseline sequenziale
-
-- Script: [exp/run_seq.sh](exp/run_seq.sh)
-- Scopo: misura il tempo della versione sequenziale come riferimento.
-- Input tipico: `N=1000000`, `NZ=250000000`, `MODE=irregular`, `SEED=111`, `REPEATS=3`.
-- Output: [exp/results/sequential_results.csv](exp/results/sequential_results.csv)
-
-Esecuzione:
+All benchmark scripts are fully automated, calculate median metrics across repeated runs, and export standardized CSV outputs directly into `exp/results/`:
 
 ```bash
-cd exp
-bash run_seq.sh
+cd exp/
+chmod +x *.sh
+
+# Execute any desired experiment
+./run_strong_scalability.sh
 ```
 
-### Cross-validation corretta'
+### Experiment Inventory
 
-- Script: [exp/run_correctness_test.sh](exp/run_correctness_test.sh)
-- Scopo: confronta checksum, Rayleigh e, se abilitato, dump del vettore finale tra piu' implementazioni.
-- Confronta la versione sequenziale con le implementazioni parallele selezionate nello script.
-- Output: CSV di validazione in [exp/results](exp/results) e dump opzionali dei vettori.
+| Benchmark Script | Purpose & Description | Output CSV |
+| :--- | :--- | :--- |
+| [`run_seq.sh`](exp/run_seq.sh) | Evaluates baseline single-threaded sequential performance. | `sequential_results.csv` |
+| [`run_correctness_test.sh`](exp/run_correctness_test.sh) | Cross-validates Rayleigh quotient and checksum across all implementations. | `cross_validation_results.csv` |
+| [`run_regular_irregular.sh`](exp/run_regular_irregular.sh) | Quantifies the performance impact of regular vs. irregular sparsity structures. | `regular_vs_irregular.csv` |
+| [`run_omp_task_vs_work.sh`](exp/run_omp_task_vs_work.sh) | Compares OpenMP Tasks vs. Work-Sharing on single-node (4 to 32 threads). | `omp_task_vs_work.csv` |
+| [`run_mpi_task_vs_work.sh`](exp/run_mpi_task_vs_work.sh) | Compares MPI+OMP Tasks vs. Work-Sharing on clusters (1 to 8 nodes). | `mpi_task_vs_work.csv` |
+| [`run_strong_scalability.sh`](exp/run_strong_scalability.sh) | Evaluates strong scalability ($N=1\text{M}, NZ=250\text{M}$) across 1, 2, 4, 8 nodes. | `strong_scaling_results.csv` |
+| [`run_weak_scalability.sh`](exp/run_weak_scalability.sh) | Evaluates weak scalability scaling both $N$ and $NZ$ proportionally with nodes. | `weak_scaling_results.csv` |
+| [`run_weak_scalability_constant.sh`](exp/run_weak_scalability_constant.sh) | Evaluates weak scalability with fixed $N$ and proportional non-zero density. | `weak_scaling_constant_results.csv` |
+| [`run_granularity.sh`](exp/run_granularity.sh) | Sweeps SpMV chunk sizes (256 to 16,384 rows/chunk) to find optimal granularity. | `granularity_results.csv` |
+| [`run_granularity_norm.sh`](exp/run_granularity_norm.sh) | Sweeps normalization chunk sizes with fixed SpMV chunk size. | `norm_granularity_results.csv` |
+| [`run_mpi_sweep.sh`](exp/run_mpi_sweep.sh) | Explores hybrid MPI rank vs. OpenMP thread balance for fixed core budgets. | `mpi_sweep_results.csv` |
 
-Esecuzione:
+---
+
+## Plotting & Visual Analytics (`plot.py`)
+
+The centralized plotting engine reads experimental results from `exp/results/` and outputs high-resolution figures to `img/`:
 
 ```bash
-cd exp
-bash run_correctness_test.sh
+# Generate all plots
+python3 plot.py --all
+
+# Generate specific plots
+python3 plot.py --strong-scaling       # Strong scaling execution time and speedup
+python3 plot.py --weak-scaling         # Weak scaling execution time and efficiency
+python3 plot.py --breakdown            # Stacked phase breakdown (Computation, Comm, Reduction)
+python3 plot.py --regular-vs-irregular # Memory access pattern comparison
+python3 plot.py --task-vs-work         # Tasking vs Work-Sharing comparative scaling
 ```
 
-### OpenMP task vs work-sharing
-
-- Script: [exp/run_omp_task_vs_work.sh](exp/run_omp_task_vs_work.sh)
-- Scopo: confronta OpenMP task e OpenMP `omp for` variando il numero di thread.
-- Thread testati: 4, 8, 16, 32.
-- Output: [exp/results/omp_task_vs_work.csv](exp/results/omp_task_vs_work.csv)
-
-### MPI + OpenMP task vs work-sharing
-
-- Script: [exp/run_mpi_task_vs_work.sh](exp/run_mpi_task_vs_work.sh)
-- Scopo: confronta le due varianti ibride al crescere dei nodi MPI, con 1 rank per nodo.
-- Nodi testati: 1, 2, 4, 8.
-- Output: [exp/results/mpi_task_vs_work.csv](exp/results/mpi_task_vs_work.csv)
-
-### Sweep MPI
-
-- Script: [exp/run_mpi_sweep.sh](exp/run_mpi_sweep.sh)
-- Scopo: studia l'effetto del numero di thread per rank nella versione MPI + OpenMP.
-- Varia `MPI_THREADS` su 1, 2, 4, 8, 16, 32 e adatta il numero di rank per nodo.
-- Output: [exp/results/mpi_sweep_results.csv](exp/results/mpi_sweep_results.csv)
-
-### Granularita' della SpMV
-
-- Script: [exp/run_granularity.sh](exp/run_granularity.sh)
-- Scopo: studia come cambia il tempo al variare del chunk size della SpMV.
-- Confronta `CPP_THREADS`, `OMP_TASKS` e `MPI_OMP`.
-- Chunk testati: 256, 512, 1024, 2048, 4096, 8192, 16384.
-- Output: [exp/results/granularity_results_16threads_medians.csv](exp/results/granularity_results_16threads_medians.csv)
-
-### Granularita' della normalizzazione
-
-- Script: [exp/run_granularity_norm.sh](exp/run_granularity_norm.sh)
-- Scopo: studia il chunk size della normalizzazione mantenendo fisso il chunk della SpMV.
-- Confronta `CPP_THREADS`, `OMP_TASKS` e `MPI_OMP`.
-- Chunk testati: 256, 512, 1024, 2048, 4096, 8192, 16384.
-- Output: [exp/results/norm_granularity_results_16threads.csv](exp/results/norm_granularity_results_16threads.csv)
-
-Nota: il nome del file di output conserva la storicizzazione dello script, anche se i parametri correnti usano 32 thread.
-
-### Regular vs irregular
-
-- Script: [exp/run_regular_irregular.sh](exp/run_regular_irregular.sh)
-- Scopo: confronta il comportamento su matrice `regular` e `irregular`.
-- Confronta `CPP_THREADS`, `OMP_TASKS` e `MPI_OMP`.
-- Output: [exp/results/regular_vs_irregular.csv](exp/results/regular_vs_irregular.csv)
-
-### Strong scaling
-
-- Script: [exp/run_strong_scalability.sh](exp/run_strong_scalability.sh)
-- Scopo: misura la scalabilita' forte della versione MPI + OpenMP.
-- Nodi testati: 1, 2, 4, 8.
-- Output: [exp/results/strong_scaling_results.csv](exp/results/strong_scaling_results.csv)
-
-### Weak scaling
-
-- Script: [exp/run_weak_scalability.sh](exp/run_weak_scalability.sh)
-- Scopo: weak scaling con dimensione del problema proporzionale al numero di nodi.
-- Output: [exp/results/weak_scaling_results.csv](exp/results/weak_scaling_results.csv)
-
-### Weak scaling a N costante
-
-- Script: [exp/run_weak_scalability_constant.sh](exp/run_weak_scalability_constant.sh)
-- Scopo: weak scaling con `N` fisso e `NZ` che cresce con i nodi.
-- Output: [exp/results/weak_scaling_constant_results.csv](exp/results/weak_scaling_constant_results.csv)
-
-## Generazione dei grafici
-
-Lo script [plot.py](plot.py) legge i CSV prodotti dagli esperimenti e salva i grafici nella cartella [img](img).
-
-Esempi:
-
-```bash
-python plot.py
-python plot.py --all
-python plot.py --strong-scaling
-python plot.py --weak-scaling
-python plot.py --breakdown
-python plot.py --regular-vs-irregular
-```
-
-Se non passi flag, lo script genera tutto.
-
-### Grafici prodotti
-
-- breakdown dei tempi per strong scaling
-- breakdown dei tempi per weak scaling
-- breakdown dei tempi per weak scaling con `N` costante
-- confronto regular vs irregular
-- grafici di strong scaling
-- grafici di weak scaling
-
-## Output dei programmi
-
-Ogni eseguibile stampa:
-
-- i parametri della run;
-- il checksum del vettore finale;
-- il Rayleigh quotient;
-- il breakdown temporale delle sezioni misurate.
-
-Le cartelle rilevanti sono:
-
-- [exp/results](exp/results): CSV generati dagli esperimenti;
-- [img](img): grafici generati da `plot.py`.
-
-## Note pratiche
-
-- Gli script sono pensati per ambiente Slurm.
-- Per confronti affidabili usa gli stessi seed e gli stessi parametri del problema.
-- La matrice `irregular` e' la piu' interessante per studiare il load balancing.
-- Per i test di correttezza, il checksum e il Rayleigh devono restare coerenti tra le varianti.
+*Developed for the Parallel and Distributed Systems course*

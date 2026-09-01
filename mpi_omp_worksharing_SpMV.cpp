@@ -260,9 +260,12 @@ static double local_dot_omp_for(const std::vector<double>& a,
                                 const std::vector<double>& b,
                                 std::size_t begin, std::size_t count,
                                 std::size_t chunk_size) {
+                 
+    // static: makes sum shared, as required for reduction on an orphaned
+    // "#pragma omp for" (its variable must already be shared in the
+    // parent parallel region, or the compiler rejects it)
 
     static double sum = 0.0;
-
     #pragma omp single
     {
         sum = 0.0;
