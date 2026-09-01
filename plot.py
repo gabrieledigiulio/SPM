@@ -75,7 +75,7 @@ def plot_regular_vs_irregular(csv_filepath, output_filename):
         rects2 = ax.bar(x + width/2, pivot_df['irregular'], width, label='Irregular', color='#d62728')
 
         ax.set_ylabel('Total Time (seconds)')
-        ax.set_title('Impact of Memory Access Pattern (Total Time)')
+        ax.set_title('Impact of Row-Level Non-Zero Concentration (Total Time)')
         ax.set_xticks(x)
         ax.set_xticklabels(pivot_df.index)
         ax.legend()

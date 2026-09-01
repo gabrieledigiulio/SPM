@@ -69,7 +69,7 @@ project/
 │   ├── run_mpi_sweep.sh           # MPI Ranks vs OpenMP Threads grid exploration
 │   ├── run_granularity.sh         # SpMV task chunk size sweep
 │   ├── run_granularity_norm.sh    # Vector normalization chunk size sweep
-│   ├── run_regular_irregular.sh   # Memory access pattern comparison
+│   ├── run_regular_irregular.sh   # Regular vs irregular non-zero distribution comparison
 │   ├── run_strong_scalability.sh  # Multi-node strong scaling evaluation
 │   ├── run_weak_scalability.sh    # Proportional weak scaling evaluation
 │   ├── run_weak_scalability_constant.sh # Weak scaling with constant matrix dimension N
@@ -197,7 +197,7 @@ python3 plot.py --all
 python3 plot.py --strong-scaling       # Strong scaling execution time and speedup
 python3 plot.py --weak-scaling         # Weak scaling execution time and efficiency
 python3 plot.py --breakdown            # Stacked phase breakdown (Computation, Comm, Reduction)
-python3 plot.py --regular-vs-irregular # Memory access pattern comparison
+python3 plot.py --regular-vs-irregular # Regular vs irregular non-zero distribution comparison
 python3 plot.py --task-vs-work         # Tasking vs Work-Sharing comparative scaling
 ```
 
