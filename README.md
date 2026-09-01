@@ -48,7 +48,7 @@ To stress-test different parallelization strategies, matrices can be generated i
 ## Project Structure
 
 ```
-project/
+SPM/
 ├── iterative_SpMV.cpp             # Sequential baseline
 ├── threadpool_SpMV.cpp            # Custom C++20 thread pool implementation
 ├── omp_tasks_SpMV.cpp             # OpenMP task-based implementation
